@@ -99,8 +99,6 @@ export const ResultsPage: React.FC = () => {
           onDownloadAuditLog={handleDownloadAuditLog}
           onReEditClick={() => navigate('/upload')}
         />
-      </div>
-
         {/* Fixed Footer Anchor */}
         <footer className="fixed bottom-0 right-0 left-[240px] bg-surface-container-lowest border-t border-outline-variant py-md px-xl flex justify-between items-center z-40 select-none">
           <div className="flex items-center gap-xs text-on-surface-variant text-label-sm">
