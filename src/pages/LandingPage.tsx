@@ -64,10 +64,10 @@ export const LandingPage: React.FC = () => {
                 <span className="material-symbols-outlined text-[16px]">verified_user</span>
                 <span className="font-label-sm text-label-sm">Next-Gen AI Redaction Engine</span>
               </div>
-              <h1 className="font-display text-display leading-tight text-on-surface max-w-xl">
+              <h1 className="font-display text-display leading-tight text-on-surface max-w-3xl">
                 Protect Privacy in Every Frame
               </h1>
-              <p className="font-body-lg text-body-lg text-on-surface-variant max-w-lg">
+              <p className="font-body-lg text-body-lg text-on-surface-variant max-w-2xl">
                 Automatically detect and blur faces, screens, license plates, and ID cards using AI-powered object detection and tracking. Precise, fast, and entirely invisible.
               </p>
               <div className="flex flex-wrap gap-md mt-sm">
@@ -166,7 +166,7 @@ export const LandingPage: React.FC = () => {
               {/* Connector Line */}
               <div className="hidden md:block absolute top-12 left-12 right-12 h-[1px] bg-outline-variant z-0"></div>
               {/* Steps */}
-              <div className="flex flex-col items-center text-center gap-md z-10 max-w-[180px]">
+              <div className="flex flex-col items-center text-center gap-md z-10 flex-1 w-full max-w-[220px]">
                 <div className="w-16 h-16 rounded-full bg-surface-container border border-outline-variant flex items-center justify-center text-primary shadow-lg">
                   <span className="material-symbols-outlined text-[32px]">upload</span>
                 </div>
@@ -177,7 +177,7 @@ export const LandingPage: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <div className="flex flex-col items-center text-center gap-md z-10 max-w-[180px]">
+              <div className="flex flex-col items-center text-center gap-md z-10 flex-1 w-full max-w-[220px]">
                 <div className="w-16 h-16 rounded-full bg-surface-container border border-outline-variant flex items-center justify-center text-primary shadow-lg">
                   <span className="material-symbols-outlined text-[32px]">psychology</span>
                 </div>
@@ -188,7 +188,7 @@ export const LandingPage: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <div className="flex flex-col items-center text-center gap-md z-10 max-w-[180px]">
+              <div className="flex flex-col items-center text-center gap-md z-10 flex-1 w-full max-w-[220px]">
                 <div className="w-16 h-16 rounded-full bg-surface-container border border-outline-variant flex items-center justify-center text-primary shadow-lg">
                   <span className="material-symbols-outlined text-[32px]">polyline</span>
                 </div>
@@ -199,7 +199,7 @@ export const LandingPage: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <div className="flex flex-col items-center text-center gap-md z-10 max-w-[180px]">
+              <div className="flex flex-col items-center text-center gap-md z-10 flex-1 w-full max-w-[220px]">
                 <div className="w-16 h-16 rounded-full bg-surface-container border border-outline-variant flex items-center justify-center text-primary shadow-lg">
                   <span className="material-symbols-outlined text-[32px]">blur_on</span>
                 </div>
@@ -210,7 +210,7 @@ export const LandingPage: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <div className="flex flex-col items-center text-center gap-md z-10 max-w-[180px]">
+              <div className="flex flex-col items-center text-center gap-md z-10 flex-1 w-full max-w-[220px]">
                 <div className="w-16 h-16 rounded-full bg-primary border border-primary flex items-center justify-center text-on-primary shadow-lg shadow-primary/20">
                   <span className="material-symbols-outlined text-[32px]">download</span>
                 </div>
@@ -359,12 +359,12 @@ export const LandingPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => navigate('/upload')}
-                className="bg-primary text-on-primary px-xl py-md rounded-lg font-label-md text-label-md font-bold hover:bg-primary-container hover:text-on-primary-container transition-all shadow-lg shadow-primary/20 cursor-pointer"
+                className="bg-primary text-on-primary px-xl py-md rounded-lg font-label-md text-label-md font-bold hover:bg-primary-container hover:text-on-primary-container hover:scale-[1.02] transition-all shadow-lg shadow-primary/20 cursor-pointer"
               >
                 Try Demo with Your Video
               </button>
               <p className="font-label-sm text-label-sm text-on-surface-variant mt-md">
-                Free trial includes up to 60 seconds of HD processing.
+                Process high-resolution video streams with automated AI privacy redaction.
               </p>
             </div>
           </div>
@@ -372,23 +372,23 @@ export const LandingPage: React.FC = () => {
 
         {/* Final CTA Section */}
         <section className="py-xl px-gutter">
-          <div className="max-w-4xl mx-auto glass-card p-xl rounded-3xl text-center border-primary/20 bg-gradient-to-br from-surface-container to-surface">
+          <div className="max-w-4xl mx-auto glass-card p-xl md:p-2xl rounded-3xl text-center border-primary/20 bg-gradient-to-br from-surface-container to-surface">
             <h2 className="font-display text-display text-on-surface mb-md">Ready to secure your media?</h2>
-            <p className="font-body-lg text-body-lg text-on-surface-variant mb-xl max-w-2xl mx-auto">
+            <p className="font-body-lg text-body-lg text-on-surface-variant mb-xl max-w-2xl mx-auto leading-relaxed">
               Join technical teams at global news agencies, research firms, and legal practices who trust SafeFrame for automated privacy at scale.
             </p>
             <div className="flex flex-col sm:flex-row justify-center gap-md">
               <button
                 type="button"
                 onClick={() => navigate('/upload')}
-                className="bg-on-surface text-surface px-xl py-md rounded-lg font-label-md text-label-md font-bold hover:bg-white transition-all cursor-pointer"
+                className="bg-on-surface text-surface px-xl py-md rounded-lg font-label-md text-label-md font-bold hover:bg-white hover:scale-[1.02] transition-all cursor-pointer shadow-lg"
               >
-                Create Free Account
+                Start Protecting Videos
               </button>
               <button
                 type="button"
                 onClick={() => setSalesModalOpen(true)}
-                className="border border-outline-variant text-on-surface px-xl py-md rounded-lg font-label-md text-label-md font-bold hover:bg-surface-variant transition-all cursor-pointer"
+                className="border border-outline-variant text-on-surface px-xl py-md rounded-lg font-label-md text-label-md font-bold hover:bg-surface-variant hover:scale-[1.02] transition-all cursor-pointer"
               >
                 Contact Sales
               </button>
@@ -400,33 +400,36 @@ export const LandingPage: React.FC = () => {
       {/* Contact Sales Modal */}
       {salesModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-md">
-          <div className="glass-card max-w-md w-full p-xl rounded-2xl border border-outline-variant flex flex-col gap-md">
-            <div className="flex justify-between items-center">
-              <h3 className="font-headline-md text-on-surface font-bold">Contact Enterprise Sales</h3>
+          <div className="glass-card max-w-xl w-full p-2xl rounded-3xl border border-outline-variant flex flex-col gap-lg shadow-2xl">
+            <div className="flex justify-between items-center border-b border-outline-variant/40 pb-md">
+              <h3 className="font-headline-md text-on-surface font-bold text-xl">Contact Enterprise Sales</h3>
               <button
                 type="button"
                 onClick={() => setSalesModalOpen(false)}
-                className="text-on-surface-variant hover:text-on-surface cursor-pointer"
+                className="text-on-surface-variant hover:text-on-surface cursor-pointer p-xs rounded-lg hover:bg-surface-variant/40"
               >
                 <span className="material-symbols-outlined">close</span>
               </button>
             </div>
-            <p className="font-body-md text-on-surface-variant">
-              Get custom high-throughput CUDA deployment, dedicated enterprise SLA, and priority support.
+            <p className="font-body-lg text-on-surface-variant max-w-xl leading-relaxed">
+              Get custom high-throughput CUDA deployment, dedicated enterprise SLA, and priority support for local or cloud environments.
             </p>
-            <div className="p-md bg-surface-container rounded-lg border border-outline-variant text-sm font-mono text-primary">
-              sales@safeframe.ai
+            <div className="p-lg bg-surface-container rounded-xl border border-outline-variant/60 font-mono text-primary text-base flex items-center justify-between">
+              <span>sales@safeframe.ai</span>
+              <span className="material-symbols-outlined text-xs opacity-60">mail</span>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                window.location.href = 'mailto:sales@safeframe.ai?subject=SafeFrame%20Enterprise%20Inquiry';
-                setSalesModalOpen(false);
-              }}
-              className="bg-primary text-on-primary py-md rounded-lg font-label-md font-bold hover:opacity-90 transition-all cursor-pointer"
-            >
-              Open Email Client
-            </button>
+            <div className="flex justify-end gap-md pt-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  window.location.href = 'mailto:sales@safeframe.ai?subject=SafeFrame%20Enterprise%20Inquiry';
+                  setSalesModalOpen(false);
+                }}
+                className="bg-primary text-on-primary px-xl py-md rounded-xl font-label-md font-bold hover:opacity-90 hover:scale-[1.02] transition-all cursor-pointer shadow-glow"
+              >
+                Open Email Client
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -434,35 +437,35 @@ export const LandingPage: React.FC = () => {
       {/* Developer API & SDK Modal */}
       {apiModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-md">
-          <div className="glass-card max-w-lg w-full p-xl rounded-2xl border border-outline-variant flex flex-col gap-md">
-            <div className="flex justify-between items-center">
+          <div className="glass-card max-w-2xl w-full p-2xl rounded-3xl border border-outline-variant flex flex-col gap-lg shadow-2xl">
+            <div className="flex justify-between items-center border-b border-outline-variant/40 pb-md">
               <div className="flex items-center gap-sm">
-                <span className="material-symbols-outlined text-primary">code</span>
-                <h3 className="font-headline-md text-on-surface font-bold">SafeFrame Developer API</h3>
+                <span className="material-symbols-outlined text-primary text-2xl">code</span>
+                <h3 className="font-headline-md text-on-surface font-bold text-xl">SafeFrame Developer API</h3>
               </div>
               <button
                 type="button"
                 onClick={() => setApiModalOpen(false)}
-                className="text-on-surface-variant hover:text-on-surface cursor-pointer"
+                className="text-on-surface-variant hover:text-on-surface cursor-pointer p-xs rounded-lg hover:bg-surface-variant/40"
               >
                 <span className="material-symbols-outlined">close</span>
               </button>
             </div>
-            <p className="font-body-md text-on-surface-variant">
-              Integrate SafeFrame neural redaction directly into your Python pipelines or REST microservices.
+            <p className="font-body-lg text-on-surface-variant max-w-2xl leading-relaxed">
+              Integrate SafeFrame neural redaction directly into your Python processing pipelines or REST microservices with simple SDK bindings.
             </p>
-            <div className="p-md bg-black/60 rounded-lg border border-outline-variant text-xs font-mono text-primary flex flex-col gap-xs">
-              <div><span className="text-on-surface-variant"># Python SDK Quickstart</span></div>
-              <div>import safeframe</div>
-              <div>client = safeframe.Client(api_key=&quot;sf_live_...&quot;)</div>
-              <div>task = client.redact_video(&quot;input.mp4&quot;, targets=[&quot;faces&quot;, &quot;plates&quot;])</div>
-              <div>print(task.status) # COMPLETED</div>
+            <div className="p-lg bg-black/80 rounded-xl border border-outline-variant/60 font-mono text-sm text-primary flex flex-col gap-sm leading-relaxed overflow-x-auto">
+              <div><span className="text-on-surface-variant/70"># Python SDK Quickstart</span></div>
+              <div><span className="text-secondary">import</span> safeframe</div>
+              <div>client = safeframe.Client()</div>
+              <div>task = client.redact_video(<span className="text-emerald-400">&quot;input.mp4&quot;</span>, targets=[<span className="text-emerald-400">&quot;faces&quot;</span>, <span className="text-emerald-400">&quot;plates&quot;</span>])</div>
+              <div>print(task.status) <span className="text-on-surface-variant/50"># COMPLETED</span></div>
             </div>
-            <div className="flex justify-end gap-sm pt-sm">
+            <div className="flex justify-end gap-sm pt-xs">
               <button
                 type="button"
                 onClick={() => setApiModalOpen(false)}
-                className="bg-primary text-on-primary px-lg py-sm rounded-lg font-label-md font-bold hover:opacity-90 transition-all cursor-pointer"
+                className="bg-primary text-on-primary px-xl py-md rounded-xl font-label-md font-bold hover:opacity-90 hover:scale-[1.02] transition-all cursor-pointer shadow-glow"
               >
                 Close Documentation
               </button>
@@ -476,7 +479,7 @@ export const LandingPage: React.FC = () => {
         <div className="w-full py-xl px-gutter flex flex-col md:flex-row justify-between items-center max-w-container-max mx-auto gap-xl">
           <div className="flex flex-col gap-sm items-center md:items-start">
             <span className="font-display text-headline-md text-on-surface font-bold">SafeFrame</span>
-            <p className="font-body-md text-label-sm text-on-surface-variant max-w-xs text-center md:text-left">
+            <p className="font-body-md text-label-sm text-on-surface-variant max-w-md text-center md:text-left">
               © 2024 SafeFrame AI. Technical Authority in Video Privacy.
             </p>
           </div>

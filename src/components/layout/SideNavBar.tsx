@@ -70,8 +70,8 @@ export const SideNavBar: React.FC<SideNavBarProps> = ({ onNewUploadClick }) => {
         })}
       </nav>
 
-      {/* Primary CTA Button */}
-      <div className="mt-auto pt-md border-t border-outline-variant">
+      {/* Primary CTA & Back to Landing Action */}
+      <div className="mt-auto flex flex-col gap-sm pt-md border-t border-outline-variant">
         <Link
           to="/upload"
           onClick={onNewUploadClick}
@@ -79,6 +79,16 @@ export const SideNavBar: React.FC<SideNavBarProps> = ({ onNewUploadClick }) => {
         >
           <span className="material-symbols-outlined text-[18px]">add</span>
           <span>New Upload</span>
+        </Link>
+
+        <Link
+          to="/"
+          className="group text-on-surface-variant hover:text-primary transition-colors px-md py-xs flex items-center gap-md rounded-lg hover:bg-surface-variant/40 text-left w-full cursor-pointer"
+        >
+          <span className="material-symbols-outlined text-[20px] group-hover:-translate-x-1 transition-transform">
+            arrow_back
+          </span>
+          <span className="font-label-sm text-label-sm">Back to Landing</span>
         </Link>
       </div>
     </aside>

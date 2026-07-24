@@ -195,12 +195,15 @@ body {
     top: 0;
     opacity: 0;
   }
+
   10% {
     opacity: 1;
   }
+
   90% {
     opacity: 1;
   }
+
   100% {
     top: 100%;
     opacity: 0;
@@ -208,7 +211,7 @@ body {
 }
 
 .progress-shimmer {
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
   background-size: 200% 100%;
   animation: shimmer 2s infinite;
 }
@@ -217,6 +220,7 @@ body {
   0% {
     background-position: -200% 0;
   }
+
   100% {
     background-position: 200% 0;
   }
@@ -227,9 +231,12 @@ body {
 }
 
 @keyframes pulse-border {
-  0%, 100% {
+
+  0%,
+  100% {
     border-color: rgba(59, 130, 246, 0.3);
   }
+
   50% {
     border-color: rgba(59, 130, 246, 1);
   }
@@ -243,9 +250,17 @@ body {
 }
 
 @keyframes success-glow {
-  0% { box-shadow: 0 0 0 0 rgba(173, 198, 255, 0); }
-  50% { box-shadow: 0 0 20px 2px rgba(173, 198, 255, 0.2); }
-  100% { box-shadow: 0 0 0 0 rgba(173, 198, 255, 0); }
+  0% {
+    box-shadow: 0 0 0 0 rgba(173, 198, 255, 0);
+  }
+
+  50% {
+    box-shadow: 0 0 20px 2px rgba(173, 198, 255, 0.2);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(173, 198, 255, 0);
+  }
 }
 
 .animate-success {

@@ -51,10 +51,10 @@ export const RecentVideoTable: React.FC<RecentVideoTableProps> = ({
           <div className="w-16 h-16 rounded-full bg-surface-container-high border border-outline-variant flex items-center justify-center text-on-surface-variant">
             <span className="material-symbols-outlined text-[32px]">movie_edit</span>
           </div>
-          <div className="flex flex-col gap-xs max-w-md">
-            <h4 className="font-headline-md text-on-surface font-bold">No Processed Videos Yet</h4>
-            <p className="font-body-md text-on-surface-variant text-label-md">
-              Upload your first video to begin automated AI face, license plate, and screen redaction.
+          <div className="flex flex-col gap-xs max-w-lg">
+            <h4 className="font-headline-md text-on-surface font-bold">No Videos Processed Yet</h4>
+            <p className="font-body-md text-on-surface-variant text-label-md leading-relaxed">
+              Upload your first video or connect a live camera feed to begin automated face, screen, and license plate redaction.
             </p>
           </div>
           <button

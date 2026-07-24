@@ -20,7 +20,7 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({
         {activeTaskName ? (
           <div className="flex items-center gap-md">
             <span className="text-on-surface-variant font-label-md">Active Task:</span>
-            <span className="font-bold text-on-surface font-label-md truncate max-w-xs md:max-w-md">
+            <span className="font-bold text-on-surface font-label-md truncate max-w-sm md:max-w-lg">
               {activeTaskName}
             </span>
             {isProcessing && (

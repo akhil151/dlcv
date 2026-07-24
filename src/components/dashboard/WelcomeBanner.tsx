@@ -21,17 +21,17 @@ export const WelcomeBanner: React.FC<WelcomeBannerProps> = ({
   };
 
   return (
-    <section className="mb-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-lg glass-panel p-xl rounded-2xl border border-outline-variant/60 shadow-xl">
-      <div className="flex flex-col gap-xs">
-        <div className="inline-flex items-center gap-xs bg-primary/10 text-primary border border-primary/20 px-sm py-[2px] rounded-full text-xs font-label-sm w-fit mb-xs">
+    <section className="mb-xl flex flex-col lg:flex-row justify-between items-start lg:items-center gap-xl glass-panel p-xl md:p-2xl rounded-3xl border border-outline-variant/60 shadow-2xl">
+      <div className="flex flex-col gap-sm max-w-3xl">
+        <div className="inline-flex items-center gap-xs bg-primary/10 text-primary border border-primary/20 px-md py-xs rounded-full text-xs font-label-sm w-fit">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span>YOLOv11 TensorRT Active</span>
+          <span>YOLOv11 TensorRT Active Engine</span>
         </div>
-        <h2 className="font-display text-headline-lg text-on-surface font-bold">
+        <h2 className="font-display text-display text-on-surface font-bold leading-tight">
           Neural Vision Control Center
         </h2>
-        <p className="font-body-md text-on-surface-variant max-w-xl">
-          Automated privacy redaction engine for video streams. {tasksCompletedCount > 0 ? `${tasksCompletedCount} processing tasks completed.` : 'Ready for video ingest.'}
+        <p className="font-body-lg text-body-lg text-on-surface-variant max-w-2xl leading-relaxed">
+          Automated privacy redaction engine for video streams. {tasksCompletedCount > 0 ? `${tasksCompletedCount} processing tasks completed.` : 'Ready for automated face, screen, and license plate redaction.'}
         </p>
       </div>
 
