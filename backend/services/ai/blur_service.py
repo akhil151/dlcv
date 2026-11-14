@@ -1,7 +1,8 @@
 import cv2
+import math
 import time
 import numpy as np
-from typing import List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any
 from backend.config.ai_settings import ai_settings
 from backend.schemas.tracking import TrackedObjectItem, TrackStateEnum
 from backend.schemas.ghost_box import GhostBoxItem
@@ -11,19 +12,38 @@ from backend.core.logging import logger
 class BlurService:
     """
     High-Performance ROI-Restricted Image Anonymization Service for SafeFrame AI Engine.
-    
+
     Responsibilities:
     - Merges active tracked entities and predictive Ghost Boxes into a unified ROI execution plan.
+    - Builds each mask from the detected face box: proportional padding plus a
+      rounded (superellipse) silhouette, never a fixed-size rectangle.
     - Applies Gaussian Blur, Pixelation, Blackout, or Feathered Blur strictly inside ROI slices in-place.
     - Safely clips bounding box coordinates to image boundaries [0, width] and [0, height].
     - Handles overlapping, nested, or out-of-bounds regions seamlessly.
+
+    Privacy contract: whatever the mask looks like, every pixel of the detected
+    face box itself is fully filtered. The rounded edge and its soft ramp only
+    live in the padding ring around the face, so appearance never costs coverage.
     """
 
     def __init__(self) -> None:
         self.default_style = ai_settings.DEFAULT_BLUR_STYLE
-        self.gaussian_ksize = ai_settings.GAUSSIAN_KERNEL_SIZE
-        self.pixelate_block = ai_settings.PIXELATE_BLOCK_SIZE
-        self.feather_radius = ai_settings.FEATHER_RADIUS
+        self.gaussian_sigma_min_ratio = ai_settings.GAUSSIAN_SIGMA_MIN_RATIO
+        self.gaussian_sigma_gain = ai_settings.GAUSSIAN_SIGMA_GAIN
+        self.gaussian_min_sigma = ai_settings.GAUSSIAN_MIN_SIGMA_PX
+        self.gaussian_max_kernel = ai_settings.GAUSSIAN_MAX_KERNEL
+        self.pixelate_max_blocks = ai_settings.PIXELATE_MAX_BLOCKS
+        self.pixelate_min_block = ai_settings.PIXELATE_MIN_BLOCK_PX
+        self.padding_x_ratio = ai_settings.BLUR_PADDING_X_RATIO
+        self.padding_y_ratio = ai_settings.BLUR_PADDING_Y_RATIO
+        self.min_padding = ai_settings.BLUR_MIN_PADDING_PX
+        self.max_padding = ai_settings.BLUR_MAX_PADDING_PX
+        self.superellipse_exponent = max(2.0, ai_settings.MASK_SUPERELLIPSE_EXPONENT)
+        self.solid_margin_ratio = max(0.0, min(1.0, ai_settings.MASK_SOLID_MARGIN_RATIO))
+        self.hold_frames = ai_settings.REDACTION_HOLD_FRAMES
+        # Mask shape depends only on (ROI size, core inset, softness) and frame
+        # geometry is constant per task, so the alpha mask is reused per shape.
+        self._alpha_cache: Dict[Tuple[int, ...], np.ndarray] = {}
 
     def render_blur(
         self,
@@ -33,18 +53,38 @@ class BlurService:
         blur_style: str = "gaussian",
         blur_intensity: int = 80,
         frame_index: int = 0,
+        detections: Optional[List[Any]] = None,
+        hold_frames: Optional[int] = None,
     ) -> Tuple[np.ndarray, BlurFrameResult]:
         """
         Applies anonymization filters to target ROI regions inside the frame.
         Returns (anonymized_frame, BlurFrameResult).
+
+        Redaction sources, in priority order:
+        1. ``detections`` from the current frame - masked immediately, on the
+           very first frame a face appears (fail-safe).
+        2. Live tracks (NEW/TRACKED) - their smoothed box never excludes the
+           detection it was matched to.
+        3. Recently lost tracks, held for ``hold_frames`` frames at their last
+           known box, without movement or expansion.
+        4. Predictive ghost boxes, only if explicitly supplied.
+
+        Overlapping sources describing the same face are merged into a single
+        union region, so the same pixels are never filtered twice and a slightly
+        shifted smoothed box can never leave part of the detection unmasked.
         """
         start_time = time.time()
 
-        # Parse requested blur mode enum
+        # Parse requested blur mode enum. An unrecognized style must not silently
+        # downgrade to a weaker filter, so fail closed to fully-opaque blackout.
         try:
-            mode = BlurModeEnum(blur_style.lower())
-        except ValueError:
-            mode = BlurModeEnum.GAUSSIAN
+            mode = BlurModeEnum(str(blur_style).lower())
+        except (ValueError, AttributeError):
+            logger.warning(
+                f"[BlurService] Frame #{frame_index}: unsupported blur style "
+                f"{blur_style!r}; failing closed to blackout."
+            )
+            mode = BlurModeEnum.BLACKOUT
 
         # Edge Case 1: Empty or corrupted frame
         if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
@@ -64,26 +104,55 @@ class BlurService:
         frame_height, frame_width = frame.shape[:2]
         output_frame = frame.copy()
 
-        # Step 1: Merge active tracks and ghosts into ROI Plans
+        # Step 1: Merge detections, tracks, held and ghost boxes into ROI plans.
         roi_plans: List[BlurROIPlan] = []
         active_tracks_count = 0
         ghost_regions_count = 0
+        held_tracks_count = 0
+        hold_limit = self.hold_frames if hold_frames is None else int(hold_frames)
 
-        # Process active confirmed tracks
-        for t in tracks:
-            if t.is_confirmed and t.track_state != TrackStateEnum.REMOVED:
-                plan = self._convert_normalized_bbox_to_roi(t.bbox, frame_width, frame_height, t.category, is_ghost=False)
-                if plan:
-                    roi_plans.append(plan)
+        def add_plan(bbox: Any, category: Any, is_ghost: bool) -> bool:
+            """Adds a plan, or folds it into an equivalent existing region."""
+            plan = self._convert_normalized_bbox_to_roi(
+                bbox, frame_width, frame_height, category, is_ghost=is_ghost)
+            if plan is None:
+                return False
+            for index, existing in enumerate(roi_plans):
+                if self._same_region(plan, existing):
+                    roi_plans[index] = self._merge_plans(existing, plan)
+                    return False
+            roi_plans.append(plan)
+            return True
+
+        # (1) Current-frame detections: masked immediately, including the first
+        # frame a face appears. This is the primary redaction source.
+        for detection in (detections or []):
+            if add_plan(detection.bbox, detection.category, is_ghost=False):
+                active_tracks_count += 1
+
+        # (2) Live tracks. Their box is a union of the smoothed trajectory and
+        # the current detection, so folding it in can only grow the mask.
+        for track in tracks:
+            if track.track_state in (TrackStateEnum.NEW, TrackStateEnum.TRACKED):
+                if add_plan(track.bbox, track.category, is_ghost=False):
                     active_tracks_count += 1
 
-        # Process active ghost boxes
-        for g in ghosts:
-            if g.active:
-                plan = self._convert_normalized_bbox_to_roi(g.predicted_bbox, frame_width, frame_height, g.category, is_ghost=True)
-                if plan:
-                    roi_plans.append(plan)
-                    ghost_regions_count += 1
+        # (3) Conservative hold for a confirmed face that was just missed. The
+        # box does not move or grow; the brief hold only bridges a one/two frame
+        # detector gap.
+        if hold_limit > 0:
+            for track in tracks:
+                if track.track_state != TrackStateEnum.LOST or not track.is_confirmed:
+                    continue
+                if track.frames_since_update > hold_limit:
+                    continue
+                if add_plan(track.bbox, track.category, is_ghost=False):
+                    held_tracks_count += 1
+
+        # (4) Predictive ghost boxes (disabled by default; see ai_settings).
+        for ghost in ghosts:
+            if ghost.active and add_plan(ghost.predicted_bbox, ghost.category, is_ghost=True):
+                ghost_regions_count += 1
 
         # Edge Case 2: Zero active regions to blur
         if not roi_plans:
@@ -109,7 +178,8 @@ class BlurService:
         logger.debug(
             f"[BlurService] Frame #{frame_index} anonymized in {elapsed_ms}ms | "
             f"Mode: {mode.value} ({blur_intensity}%) | Blurred Regions: {len(roi_plans)} "
-            f"({active_tracks_count} active tracks, {ghost_regions_count} ghosts)"
+            f"({active_tracks_count} detected/tracked, {held_tracks_count} held, "
+            f"{ghost_regions_count} ghosts)"
         )
 
         result = BlurFrameResult(
@@ -125,6 +195,66 @@ class BlurService:
 
         return output_frame, result
 
+    # ------------------------------------------------------------------ geometry
+
+    @staticmethod
+    def _core(plan: BlurROIPlan) -> Tuple[int, int, int, int]:
+        """Un-padded face rectangle of a plan (falls back to the ROI itself)."""
+        return (
+            plan.core_x1 if plan.core_x1 is not None else plan.x1,
+            plan.core_y1 if plan.core_y1 is not None else plan.y1,
+            plan.core_x2 if plan.core_x2 is not None else plan.x2,
+            plan.core_y2 if plan.core_y2 is not None else plan.y2,
+        )
+
+    @classmethod
+    def _core_overlap_ratio(cls, a: BlurROIPlan, b: BlurROIPlan) -> float:
+        """Intersection over the smaller core rectangle (0.0 - 1.0)."""
+        ax1, ay1, ax2, ay2 = cls._core(a)
+        bx1, by1, bx2, by2 = cls._core(b)
+        ix = max(0, min(ax2, bx2) - max(ax1, bx1))
+        iy = max(0, min(ay2, by2) - max(ay1, by1))
+        intersection = ix * iy
+        if intersection <= 0:
+            return 0.0
+        smaller = min(max(1, (ax2 - ax1) * (ay2 - ay1)), max(1, (bx2 - bx1) * (by2 - by1)))
+        return intersection / smaller
+
+    def _same_region(self, plan: BlurROIPlan, existing: BlurROIPlan) -> bool:
+        """True when two sources refer to effectively the same face region.
+
+        A region is merged when at least 80% of the smaller of the two is
+        already covered. This prevents a detection and its own track (or a stale
+        held box) from filtering the same pixels twice.
+        """
+        return self._core_overlap_ratio(plan, existing) >= 0.80
+
+    @staticmethod
+    def _merge_plans(existing: BlurROIPlan, plan: BlurROIPlan) -> BlurROIPlan:
+        """Union of two plans describing the same face.
+
+        Taking the union guarantees that a smoothed/held box can never cut a
+        corner off the current detection.
+        """
+        ex1, ey1, ex2, ey2 = BlurService._core(existing)
+        px1, py1, px2, py2 = BlurService._core(plan)
+        return BlurROIPlan(
+            x1=min(existing.x1, plan.x1), y1=min(existing.y1, plan.y1),
+            x2=max(existing.x2, plan.x2), y2=max(existing.y2, plan.y2),
+            category=existing.category,
+            is_ghost=existing.is_ghost and plan.is_ghost,
+            core_x1=min(ex1, px1), core_y1=min(ey1, py1),
+            core_x2=max(ex2, px2), core_y2=max(ey2, py2),
+        )
+
+    def _padding(self, core_w: int, core_h: int) -> Tuple[int, int]:
+        """Padding proportional to the face's own width and height."""
+        pad_x = int(round(core_w * self.padding_x_ratio))
+        pad_y = int(round(core_h * self.padding_y_ratio))
+        pad_x = max(self.min_padding, min(self.max_padding, pad_x))
+        pad_y = max(self.min_padding, min(self.max_padding, pad_y))
+        return pad_x, pad_y
+
     def _convert_normalized_bbox_to_roi(
         self,
         bbox: Any,
@@ -135,22 +265,212 @@ class BlurService:
     ) -> Optional[BlurROIPlan]:
         """
         Converts normalized percentage coordinates to clipped integer pixel boundaries.
-        """
-        x1 = int((bbox.x / 100.0) * width)
-        y1 = int((bbox.y / 100.0) * height)
-        w = int((bbox.width / 100.0) * width)
-        h = int((bbox.height / 100.0) * height)
 
-        # Clip pixel bounds safely to image bounds [0, width] and [0, height]
-        cx1 = max(0, min(width - 1, x1))
-        cy1 = max(0, min(height - 1, y1))
-        cx2 = max(cx1 + 1, min(width, x1 + w))
-        cy2 = max(cy1 + 1, min(height, y1 + h))
+        The exact rectangle is rounded *outward* (floor the origin, ceil the far
+        edge) so the ROI always contains the whole requested region, then expanded
+        by padding derived from the face's own width and height and clipped to
+        the frame.
+        """
+        # Exact floating-point pixel rectangle.
+        fx1 = (bbox.x / 100.0) * width
+        fy1 = (bbox.y / 100.0) * height
+        fx2 = ((bbox.x + bbox.width) / 100.0) * width
+        fy2 = ((bbox.y + bbox.height) / 100.0) * height
+
+        # Round outward: never shrink below the requested region.
+        core_x1 = math.floor(fx1)
+        core_y1 = math.floor(fy1)
+        core_x2 = math.ceil(fx2)
+        core_y2 = math.ceil(fy2)
+
+        core_w = max(1, core_x2 - core_x1)
+        core_h = max(1, core_y2 - core_y1)
+        pad_x, pad_y = self._padding(core_w, core_h)
+
+        # Clip padded bounds safely to image bounds [0, width] and [0, height].
+        cx1 = max(0, min(width - 1, core_x1 - pad_x))
+        cy1 = max(0, min(height - 1, core_y1 - pad_y))
+        cx2 = max(cx1 + 1, min(width, core_x2 + pad_x))
+        cy2 = max(cy1 + 1, min(height, core_y2 + pad_y))
 
         if cx2 <= cx1 or cy2 <= cy1:
             return None
 
-        return BlurROIPlan(x1=cx1, y1=cy1, x2=cx2, y2=cy2, category=category, is_ghost=is_ghost)
+        # Clamp the core into the final ROI so the mask builder can rely on it.
+        ccx1 = max(cx1, min(cx2, core_x1))
+        ccy1 = max(cy1, min(cy2, core_y1))
+        ccx2 = max(ccx1, min(cx2, core_x2))
+        ccy2 = max(ccy1, min(cy2, core_y2))
+
+        return BlurROIPlan(
+            x1=cx1, y1=cy1, x2=cx2, y2=cy2, category=category, is_ghost=is_ghost,
+            core_x1=ccx1, core_y1=ccy1, core_x2=ccx2, core_y2=ccy2,
+        )
+
+    # -------------------------------------------------------------------- masks
+
+    def _alpha_mask(self, plan: BlurROIPlan, soft: bool, power: float) -> np.ndarray:
+        """Alpha mask for one ROI: rounded face silhouette with a soft rim.
+
+        Shape: a superellipse (rounded rectangle) inscribed in the padded ROI.
+        At the configured padding ratios this silhouette contains the whole
+        detected face rectangle, so the rounded outline does not shave off any
+        part of the face. Blur/pixelation additionally fade from the face box
+        edge outwards (`soft=True`); blackout uses the same outline with a hard,
+        anti-aliased edge for a clean look.
+
+        Returns a float32 array of shape (h, w) with values in [0, 1], and is
+        cached because the shape only depends on the integers below.
+        """
+        w = plan.x2 - plan.x1
+        h = plan.y2 - plan.y1
+        cx1, cy1, cx2, cy2 = self._core(plan)
+        ix1 = max(0, min(w, cx1 - plan.x1))
+        iy1 = max(0, min(h, cy1 - plan.y1))
+        ix2 = max(ix1, min(w, cx2 - plan.x1))
+        iy2 = max(iy1, min(h, cy2 - plan.y1))
+
+        key = (w, h, ix1, iy1, ix2, iy2, 1 if soft else 0, round(power, 2))
+        cached = self._alpha_cache.get(key)
+        if cached is not None:
+            return cached
+
+        alpha = np.zeros((h, w), dtype=np.float32)
+        # Hard face core: always fully filtered, no matter what the rim does.
+        core = np.zeros((h, w), dtype=np.float32)
+        if ix2 > ix1 and iy2 > iy1:
+            core[iy1:iy2, ix1:ix2] = 1.0
+
+        half_w = max(0.5, w / 2.0)
+        half_h = max(0.5, h / 2.0)
+        center_x = (w - 1) / 2.0
+        center_y = (h - 1) / 2.0
+        ys = np.arange(h, dtype=np.float32)[:, None]
+        xs = np.arange(w, dtype=np.float32)[None, :]
+        nx = np.abs((xs - center_x) / half_w)
+        ny = np.abs((ys - center_y) / half_h)
+        quad = nx ** self.superellipse_exponent + ny ** self.superellipse_exponent
+
+        if soft:
+            # Normalize the ramp so it is 1.0 exactly at the face box's corners
+            # and 0.0 on the superellipse outline: the visible falloff lives in
+            # the padding ring, never over face pixels.
+            rx = max(abs(ix1 - center_x), abs((ix2 - 1) - center_x)) / half_w
+            ry = max(abs(iy1 - center_y), abs((iy2 - 1) - center_y)) / half_h
+            core_q = rx ** self.superellipse_exponent + ry ** self.superellipse_exponent
+            core_q = float(np.clip(core_q, 0.05, 0.95))
+            # Keep the inner part of the padding ring fully filtered (detector
+            # boxes are sometimes a pixel tight); ramp only over the outer part.
+            solid_q = core_q + self.solid_margin_ratio * (1.0 - core_q)
+            solid_q = float(np.clip(solid_q, 0.05, 0.995))
+            alpha = np.clip((1.0 - quad) / (1.0 - solid_q), 0.0, 1.0)
+            if power != 1.0:
+                alpha = np.power(alpha, power, dtype=np.float32)
+        else:
+            # Hard edge with ~1px anti-aliasing (no visible stair-stepping).
+            alpha = np.clip((1.0 - quad) / 0.08, 0.0, 1.0)
+
+        alpha = np.maximum(alpha, core)
+        alpha = alpha.astype(np.float32, copy=False)
+
+        if len(self._alpha_cache) >= 64:
+            self._alpha_cache.clear()
+        self._alpha_cache[key] = alpha
+        return alpha
+
+    def mask_outline(self, plan: BlurROIPlan) -> Optional[np.ndarray]:
+        """Pixel contour of the rendered mask, for debug annotation only.
+
+        Lets the debug frames show the exact silhouette that was filtered
+        instead of a misleading rectangle. Returns an (N, 2) int32 array of
+        frame coordinates, or None when the mask is empty.
+        """
+        alpha = self._alpha_mask(plan, soft=False, power=1.0)
+        binary = (alpha >= 0.5).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            return None
+        contour = max(contours, key=cv2.contourArea).reshape(-1, 2)
+        offset = np.array([plan.x1, plan.y1], dtype=np.int32)
+        return contour.astype(np.int32) + offset
+
+    # ------------------------------------------------------------------ filters
+
+    def _gaussian_sigma(self, width: int, height: int, intensity: int) -> float:
+        """
+        Region-relative Gaussian sigma with a privacy floor.
+
+        Sigma scales with the target's smaller side so protection tracks the
+        target and frame resolution. Even the lowest intensity stays above the
+        measured "still detectable by YuNet" threshold (~0.18 x min side on this
+        checkout); the slider raises strength from there.
+        """
+        scale = max(0.1, min(1.0, intensity / 100.0))
+        min_side = max(1, min(width, height))
+        sigma = min_side * (self.gaussian_sigma_min_ratio + self.gaussian_sigma_gain * scale)
+        return max(self.gaussian_min_sigma, sigma)
+
+    def _gaussian_blur(self, roi: np.ndarray, sigma: float) -> np.ndarray:
+        """Fast, strong Gaussian blur for a single ROI.
+
+        For large sigmas the ROI is blurred at a reduced resolution and scaled
+        back up. That carries the same low-pass effect at a fraction of the cost
+        of a huge convolution kernel (and adds no detail back).
+        """
+        h, w = roi.shape[:2]
+        downscale = int(min(4, max(1, sigma // 6)))
+        if downscale <= 1:
+            ksize = self._gaussian_kernel(sigma)
+            return cv2.GaussianBlur(roi, (ksize, ksize), sigmaX=sigma)
+
+        small_w = max(1, w // downscale)
+        small_h = max(1, h // downscale)
+        small = cv2.resize(roi, (small_w, small_h), interpolation=cv2.INTER_AREA)
+        local_sigma = max(1.0, sigma / downscale)
+        ksize = self._gaussian_kernel(local_sigma)
+        small = cv2.GaussianBlur(small, (ksize, ksize), sigmaX=local_sigma)
+        return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    def _gaussian_kernel(self, sigma: float) -> int:
+        """Odd kernel covering ~4 sigma, clamped to GAUSSIAN_MAX_KERNEL."""
+        ksize = int(math.ceil(sigma * 4.0))
+        if ksize % 2 == 0:
+            ksize += 1
+        ksize = max(3, min(self.gaussian_max_kernel, ksize))
+        if ksize % 2 == 0:
+            ksize += 1
+        return ksize
+
+    def _pixelate_block(self, width: int, height: int, intensity: int) -> int:
+        """
+        Mosaic block size that bounds the grid against the target's smaller side
+        and keeps a minimum block, so recognizable detail cannot survive.
+        """
+        scale = max(0.1, min(1.0, intensity / 100.0))
+        min_side = max(1, min(width, height))
+        max_blocks = max(2, int(round(self.pixelate_max_blocks * (1.0 - 0.5 * scale))))
+        return max(self.pixelate_min_block, int(math.ceil(min_side / max_blocks)))
+
+    def _filter_roi(self, roi: np.ndarray, mode: BlurModeEnum, intensity: int) -> np.ndarray:
+        """Returns the filtered version of a whole ROI rectangle."""
+        h, w = roi.shape[:2]
+
+        if mode == BlurModeEnum.GAUSSIAN:
+            return self._gaussian_blur(roi, self._gaussian_sigma(w, h, intensity))
+
+        if mode == BlurModeEnum.PIXELATE:
+            # Downscale then upscale with INTER_NEAREST; the block size is bounded
+            # against the target's smaller side and has a minimum.
+            block_size = self._pixelate_block(w, h, intensity)
+            small_w = max(1, w // block_size)
+            small_h = max(1, h // block_size)
+            small_roi = cv2.resize(roi, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+            return cv2.resize(small_roi, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        if mode == BlurModeEnum.BLACKOUT:
+            return np.zeros_like(roi)
+
+        return self._gaussian_blur(roi, self._gaussian_sigma(w, h, intensity))
 
     def _apply_roi_filter(
         self,
@@ -160,50 +480,37 @@ class BlurService:
         intensity: int
     ) -> None:
         """
-        Applies chosen blur mode directly to ROI slice in-place.
+        Applies the chosen filter to an ROI slice, composited through the mask.
+
+        The face box itself always receives alpha 1.0, so it is fully filtered
+        by every mode; the rounded, feathered silhouette only shapes the padding
+        ring around it.
         """
         roi = frame[plan.y1:plan.y2, plan.x1:plan.x2]
         if roi.size == 0:
             return
 
         h, w = roi.shape[:2]
+        slice_y = slice(plan.y1, plan.y2)
+        slice_x = slice(plan.x1, plan.x2)
 
-        if mode == BlurModeEnum.GAUSSIAN:
-            # Scale Gaussian kernel size with intensity (must be odd integer >= 3)
-            ksize = int(self.gaussian_ksize * (intensity / 100.0))
-            if ksize % 2 == 0:
-                ksize += 1
-            ksize = max(3, ksize)
-            blurred_roi = cv2.GaussianBlur(roi, (ksize, ksize), 0)
-            frame[plan.y1:plan.y2, plan.x1:plan.x2] = blurred_roi
+        filtered = self._filter_roi(roi, mode, intensity)
 
-        elif mode == BlurModeEnum.PIXELATE:
-            # Downscale then upscale with INTER_NEAREST
-            block_size = max(2, int(self.pixelate_block * (intensity / 50.0)))
-            small_w = max(1, w // block_size)
-            small_h = max(1, h // block_size)
-            small_roi = cv2.resize(roi, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
-            pixelated_roi = cv2.resize(small_roi, (w, h), interpolation=cv2.INTER_NEAREST)
-            frame[plan.y1:plan.y2, plan.x1:plan.x2] = pixelated_roi
+        if mode == BlurModeEnum.BLACKOUT or mode == BlurModeEnum.PIXELATE:
+            # Hard, anti-aliased rounded silhouette: a blended mosaic rim both
+            # looks muddy and lets recognizable original pixels ghost through.
+            alpha = self._alpha_mask(plan, soft=False, power=1.0)
+        else:
+            alpha = self._alpha_mask(plan, soft=True, power=1.0)
 
-        elif mode == BlurModeEnum.BLACKOUT:
-            # Solid blackout mask
-            frame[plan.y1:plan.y2, plan.x1:plan.x2] = 0
+        if bool(np.all(alpha >= 1.0)):
+            frame[slice_y, slice_x] = filtered
+            return
 
-        elif mode == BlurModeEnum.FEATHERED:
-            # Gaussian blur with alpha feathering around borders
-            ksize = int(self.gaussian_ksize * (intensity / 100.0))
-            if ksize % 2 == 0:
-                ksize += 1
-            blurred_roi = cv2.GaussianBlur(roi, (max(3, ksize), max(3, ksize)), 0)
-
-            # Create elliptical alpha mask for feathered edge blending
-            mask = np.zeros((h, w), dtype=np.float32)
-            cv2.ellipse(mask, (w // 2, h // 2), (w // 2, h // 2), 0, 0, 360, 1.0, -1)
-            mask = cv2.GaussianBlur(mask, (21, 21), 0)
-            mask_3ch = np.repeat(mask[:, :, np.newaxis], 3, axis=2)
-
-            blended_roi = (blurred_roi * mask_3ch + roi * (1.0 - mask_3ch)).astype(np.uint8)
-            frame[plan.y1:plan.y2, plan.x1:plan.x2] = blended_roi
+        channel_count = roi.shape[2] if roi.ndim == 3 else 1
+        mask = alpha if channel_count == 1 else np.repeat(alpha[:, :, np.newaxis], channel_count, axis=2)
+        blended = (filtered.astype(np.float32) * mask
+                   + roi.astype(np.float32) * (1.0 - mask))
+        frame[slice_y, slice_x] = blended.astype(np.uint8)
 
 blur_service = BlurService()

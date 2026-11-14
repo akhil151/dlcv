@@ -5,6 +5,7 @@ import type {
   RedactionTask,
   RedactionSummary,
   RecentVideoItem,
+  ReadinessSnapshot,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
@@ -20,20 +21,62 @@ export const apiClient = axios.create({
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    const message = error.response?.data?.message || error.message || 'An API error occurred';
+    const message =
+      error.response?.data?.message ||
+      error.response?.data?.detail?.[0]?.msg ||
+      error.response?.data?.detail ||
+      error.message ||
+      'An API error occurred';
     console.error('[API Error]:', message);
-    return Promise.reject(new Error(message));
+    return Promise.reject(new Error(String(message)));
   }
 );
 
+const metricsFromApi = (m: Record<string, unknown> | undefined) => ({
+  fps: Number(m?.fps ?? 0),
+  elapsedSeconds: Number(m?.elapsed_seconds ?? 0),
+  remainingSeconds: Number(m?.remaining_seconds ?? 0),
+  throughputFrames: Number(m?.throughput_frames ?? 0),
+  totalFrames: Number(m?.total_frames ?? 0),
+  processedFrames: Number(m?.processed_frames ?? 0),
+  framesWithDetections: Number(m?.frames_with_detections ?? 0),
+  masksTotal: Number(m?.masks_total ?? 0),
+  newTracksTotal: Number(m?.new_tracks_total ?? 0),
+  detectionLatencyMs: Number(m?.detection_latency_ms ?? 0),
+  blurLatencyMs: Number(m?.blur_latency_ms ?? 0),
+  avgProcessingFps: Number(m?.avg_processing_fps ?? 0),
+  debugFramesSaved: Number(m?.debug_frames_saved ?? 0),
+});
+
 export const api = {
-  // Health check
   healthCheck: async (): Promise<{ status: string }> => {
     const res = await apiClient.get('/health');
     return res.data;
   },
 
-  // Upload raw video file
+  /** Real dependency readiness: face detector weights + FFmpeg. */
+  getReadiness: async (): Promise<ReadinessSnapshot> => {
+    const res = await apiClient.get('/health/readiness');
+    const d = res.data;
+    return {
+      status: d.status,
+      process: d.process,
+      modelsLoaded: Boolean(d.models_loaded),
+      detector: {
+        name: d.detector?.name ?? 'YUNET',
+        available: Boolean(d.detector?.available),
+        status: d.detector?.status ?? 'UNKNOWN',
+        device: d.detector?.device ?? 'cpu',
+      },
+      ffmpeg: {
+        available: Boolean(d.ffmpeg?.available),
+        version: d.ffmpeg?.version ?? null,
+      },
+      processingReady: Boolean(d.processing_ready),
+      reasons: Array.isArray(d.reasons) ? d.reasons : [],
+    };
+  },
+
   uploadVideo: async (
     file: File,
     onProgress?: (pct: number) => void
@@ -45,6 +88,8 @@ export const api = {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      // Large uploads can take much longer than the default request timeout.
+      timeout: 15 * 60 * 1000,
       onUploadProgress: (evt) => {
         if (evt.total && onProgress) {
           onProgress(Math.round((evt.loaded * 100) / evt.total));
@@ -60,23 +105,24 @@ export const api = {
       format: d.format,
       resolution: d.resolution,
       durationSeconds: d.duration_seconds,
+      fps: Number(d.fps ?? 0),
+      frameCount: Number(d.frame_count ?? 0),
       estimatedProcessingSeconds: d.estimated_processing_seconds,
     };
   },
 
-  // Start redaction process
   startRedaction: async (req: StartRedactionRequest): Promise<{ taskId: string }> => {
     const payload = {
       video_id: req.videoId,
       target_categories: req.targetCategories,
       blur_style: req.blurStyle,
       blur_intensity: req.blurIntensity,
+      debug_mode: req.debugMode ?? false,
     };
     const res = await apiClient.post<{ task_id: string }>('/redact/start', payload);
     return { taskId: res.data.task_id };
   },
 
-  // Get task status & telemetry
   getTaskStatus: async (taskId: string): Promise<RedactionTask> => {
     const res = await apiClient.get(`/redact/status/${taskId}`);
     const d = res.data;
@@ -86,83 +132,63 @@ export const api = {
       filename: d.filename,
       status: d.status,
       progressPct: d.progress_pct,
-      targetCategories: d.target_categories,
+      targetCategories: d.target_categories ?? [],
       blurStyle: d.blur_style,
       blurIntensity: d.blur_intensity,
-      metrics: {
-        fps: d.metrics.fps,
-        elapsedSeconds: d.metrics.elapsed_seconds,
-        remainingSeconds: d.metrics.remaining_seconds,
-        throughputFrames: d.metrics.throughput_frames,
-        totalFrames: d.metrics.total_frames,
-        processedFrames: d.metrics.processed_frames,
-      },
+      metrics: metricsFromApi(d.metrics),
       recentLogs: d.recent_logs || [],
-      createdAt: d.created_at || new Date().toISOString(),
+      createdAt: d.created_at || '',
+      debugMode: Boolean(d.debug_mode),
+      outputVerified: d.output_verified ?? undefined,
+      failureReason: d.failure_reason ?? null,
     };
   },
 
-  // Get task completion summary & evaluation report
+  cancelTask: async (taskId: string): Promise<RedactionTask> => {
+    const res = await apiClient.post(`/redact/cancel/${taskId}`);
+    const d = res.data;
+    return {
+      taskId: d.task_id,
+      videoId: d.video_id,
+      filename: d.filename,
+      status: d.status,
+      progressPct: d.progress_pct,
+      targetCategories: d.target_categories ?? [],
+      blurStyle: d.blur_style,
+      blurIntensity: d.blur_intensity,
+      metrics: metricsFromApi(d.metrics),
+      recentLogs: d.recent_logs || [],
+      createdAt: d.created_at || '',
+      debugMode: Boolean(d.debug_mode),
+      outputVerified: d.output_verified ?? undefined,
+      failureReason: d.failure_reason ?? null,
+    };
+  },
+
   getTaskSummary: async (taskId: string): Promise<RedactionSummary> => {
     const res = await apiClient.get(`/redact/results/${taskId}`);
     const d = res.data;
     return {
       taskId: d.task_id,
       facesBlurred: d.faces_blurred,
-      licensePlatesRedacted: d.license_plates_redacted,
-      screensHidden: d.screens_hidden,
-      idCardsFound: d.id_cards_found,
-      phonesFound: d.phones_found || 0,
       totalObjectsCount: d.total_objects_count,
       processingTimeSeconds: d.processing_time_seconds,
-      originalVideoUrl: `${API_BASE_URL}/videos/download/${taskId}?raw=true`,
+      framesProcessed: d.frames_processed ?? 0,
+      framesWithDetections: d.frames_with_detections ?? 0,
+      detectionFramePct: d.detection_frame_pct ?? 0,
+      avgProcessingFps: d.avg_processing_fps ?? 0,
+      verifiedFrameCount: d.verified_frame_count ?? undefined,
+      outputResolution: d.output_resolution ?? undefined,
+      audioPreserved: d.audio_preserved ?? undefined,
+      blurStyle: d.blur_style ?? undefined,
+      blurIntensity: d.blur_intensity ?? undefined,
+      originalVideoUrl: d.original_video_url
+        ? `${API_BASE_URL}${d.original_video_url.replace(/^\/api\/v1/, '')}`
+        : `${API_BASE_URL}/videos/original/${taskId}`,
       protectedVideoUrl: `${API_BASE_URL}/videos/download/${taskId}`,
-      auditLogUrl: `${API_BASE_URL}/videos/download/${taskId}?audit=true`,
-      evaluationReport: d.evaluation_report
-        ? {
-            taskId: d.evaluation_report.task_id,
-            totalFramesEvaluated: d.evaluation_report.total_frames_evaluated,
-            evaluatedAt: d.evaluation_report.evaluated_at,
-            benchmarkPassed: d.evaluation_report.benchmark_passed,
-            detectionMetrics: {
-              map50: d.evaluation_report.detection_metrics.map_50,
-              map5095: d.evaluation_report.detection_metrics.map_50_95,
-              precision: d.evaluation_report.detection_metrics.precision,
-              recall: d.evaluation_report.detection_metrics.recall,
-              f1Score: d.evaluation_report.detection_metrics.f1_score,
-            },
-            trackingMetrics: {
-              mota: d.evaluation_report.tracking_metrics.mota,
-              motp: d.evaluation_report.tracking_metrics.motp,
-              idf1: d.evaluation_report.tracking_metrics.idf1,
-              idSwitches: d.evaluation_report.tracking_metrics.id_switches,
-              mostlyTrackedCount: d.evaluation_report.tracking_metrics.mostly_tracked_count,
-              mostlyLostCount: d.evaluation_report.tracking_metrics.mostly_lost_count,
-            },
-            privacyMetrics: {
-              privacyLeakageRatePct: d.evaluation_report.privacy_metrics.privacy_leakage_rate_pct,
-              meanLeakDurationFrames: d.evaluation_report.privacy_metrics.mean_leak_duration_frames,
-              ghostRecoveryRatePct: d.evaluation_report.privacy_metrics.ghost_recovery_rate_pct,
-              avgGhostLifetimeFrames: d.evaluation_report.privacy_metrics.avg_ghost_lifetime_frames,
-              blurCoveragePct: d.evaluation_report.privacy_metrics.blur_coverage_pct,
-              framesProtectedPct: d.evaluation_report.privacy_metrics.frames_protected_pct,
-            },
-            performanceMetrics: {
-              avgFps: d.evaluation_report.performance_metrics.avg_fps,
-              detectionLatencyMs: d.evaluation_report.performance_metrics.detection_latency_ms,
-              trackingLatencyMs: d.evaluation_report.performance_metrics.tracking_latency_ms,
-              reidLatencyMs: d.evaluation_report.performance_metrics.reid_latency_ms,
-              ghostLatencyMs: d.evaluation_report.performance_metrics.ghost_latency_ms,
-              blurLatencyMs: d.evaluation_report.performance_metrics.blur_latency_ms,
-              pipelineLatencyMs: d.evaluation_report.performance_metrics.pipeline_latency_ms,
-              peakMemoryMb: d.evaluation_report.performance_metrics.peak_memory_mb,
-            },
-          }
-        : undefined,
     };
   },
 
-  // Get dashboard statistics and recent video activity
   getDashboardData: async (): Promise<{
     stats: {
       videosProcessed: number;
@@ -192,8 +218,7 @@ export const api = {
     };
   },
 
-  getDownloadUrl: (taskId: string, isRaw = false) =>
-    `${API_BASE_URL}/videos/download/${taskId}${isRaw ? '?raw=true' : ''}`,
+  getDownloadUrl: (taskId: string) => `${API_BASE_URL}/videos/download/${taskId}`,
 
-  getAuditLogUrl: (taskId: string) => `${API_BASE_URL}/videos/download/${taskId}?audit=true`,
+  getOriginalUrl: (taskId: string) => `${API_BASE_URL}/videos/original/${taskId}`,
 };

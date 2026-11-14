@@ -1,6 +1,7 @@
 import React from 'react';
 import { ToggleSwitch } from '../ui/ToggleSwitch';
 import type { RedactionCategory } from '../../types';
+import { SUPPORTED_CATEGORIES } from '../../types';
 
 export interface TargetCategoryOption {
   id: RedactionCategory;
@@ -18,31 +19,31 @@ const CATEGORY_OPTIONS: TargetCategoryOption[] = [
   {
     id: 'faces',
     label: 'Human Faces',
-    description: 'Detects and redacts facial features across all video frames.',
+    description: 'Detects faces with YuNet and masks every detected face region.',
     icon: 'face',
   },
   {
     id: 'license_plates',
     label: 'License Plates',
-    description: 'Anonymizes vehicle license plates and registration numbers.',
+    description: 'No validated license-plate detector is configured yet.',
     icon: 'directions_car',
   },
   {
     id: 'id_cards',
     label: 'ID Cards & Passports',
-    description: 'Blurs visible identity cards, driver licenses, and badges.',
+    description: 'No validated document detector is configured yet.',
     icon: 'badge',
   },
   {
     id: 'laptop_screens',
     label: 'Laptop Screens',
-    description: 'Obscures open computer screens and desktop displays.',
+    description: 'No validated screen detector is configured yet.',
     icon: 'laptop_mac',
   },
   {
     id: 'phone_screens',
     label: 'Phone Screens',
-    description: 'Hides mobile phone displays and smartphone UI text.',
+    description: 'No validated phone-screen detector is configured yet.',
     icon: 'smartphone',
   },
 ];
@@ -58,22 +59,29 @@ export const RedactionTargetPicker: React.FC<RedactionTargetPickerProps> = ({
           Redaction Targets
         </h4>
         <p className="font-body text-xs text-on-surface-variant">
-          Select entity categories to automatically detect and obscure during processing.
+          Face redaction is the validated capability in this build. Other categories are
+          visible but disabled and are never sent to the backend.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-sm">
+      <div className="grid grid-cols-1 gap-sm">
         {CATEGORY_OPTIONS.map((opt) => {
-          const isChecked = selectedCategories.includes(opt.id);
+          const isSupported = SUPPORTED_CATEGORIES.includes(opt.id);
+          const isChecked = isSupported && selectedCategories.includes(opt.id);
           return (
-            <ToggleSwitch
-              key={opt.id}
-              checked={isChecked}
-              onChange={() => onToggleCategory(opt.id)}
-              label={opt.label}
-              description={opt.description}
-              icon={opt.icon}
-            />
+            <div key={opt.id} className={isSupported ? '' : 'opacity-55'}>
+              <ToggleSwitch
+                checked={isChecked}
+                onChange={() => {
+                  if (isSupported) onToggleCategory(opt.id);
+                }}
+                label={opt.label}
+                description={opt.description}
+                icon={opt.icon}
+                disabled={!isSupported}
+                badge={isSupported ? undefined : 'Coming Later'}
+              />
+            </div>
           );
         })}
       </div>

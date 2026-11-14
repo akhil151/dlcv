@@ -1,8 +1,8 @@
+import math
 import time
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple, Set
+from typing import List, Dict, Optional, Tuple, Set
 from backend.config.ai_settings import ai_settings
-from backend.services.ai.model_manager import model_manager
 from backend.schemas.detection import DetectionItem, NormalizedBoundingBox, TargetCategory
 from backend.schemas.tracking import (
     TrackedObjectItem,
@@ -26,9 +26,86 @@ class SingleTrackInternal:
         self.frames_since_update = 0
         self.is_confirmed = False
         self.min_hits_to_confirm = 2
+        # Centre velocity in normalized percent per frame, used ONLY to rank
+        # associations. It never moves a mask: redaction uses last observed
+        # boxes (see predicted_bbox and BlurService).
+        self.velocity = (0.0, 0.0)
+        # Redaction-box smoothing. ``bbox`` stays the rendered box: the
+        # smoothed trajectory UNION the measured detection, so it always
+        # covers the current detection and only damps detector jitter.
+        self.smoothing_alpha = ai_settings.TRACK_SMOOTHING_ALPHA
+        self.smoothing_snap_ratio = ai_settings.TRACK_SMOOTHING_SNAP_RATIO
+
+    @property
+    def center(self) -> Tuple[float, float]:
+        return (self.bbox.x + self.bbox.width / 2.0, self.bbox.y + self.bbox.height / 2.0)
+
+    def predicted_bbox(self) -> NormalizedBoundingBox:
+        """Last box shifted by the smoothed velocity (association only)."""
+        dx, dy = self.velocity
+        return NormalizedBoundingBox(x=self.bbox.x + dx, y=self.bbox.y + dy,
+                                     width=self.bbox.width, height=self.bbox.height)
+
+    def _smooth_bbox(self, measured: NormalizedBoundingBox) -> NormalizedBoundingBox:
+        """Damps detector jitter without ever shrinking below the detection.
+
+        A still face jitters by a few percent of its own size frame to frame,
+        which makes a rectangular mask visibly crawl. Blending the previous box
+        with the measurement removes most of that. Real motion (relative to the
+        face's own size) snaps straight to the measurement so the mask never
+        trails a moving face. The result is always expanded to contain the
+        measurement: smoothing may add coverage, never remove it.
+        """
+        previous = self.bbox
+        motion = max(
+            abs(measured.x - previous.x), abs(measured.y - previous.y),
+            abs(measured.width - previous.width), abs(measured.height - previous.height),
+        )
+        scale = max(1e-6, min(previous.width, previous.height))
+        if motion > self.smoothing_snap_ratio * scale:
+            smoothed = measured
+        else:
+            alpha = max(0.05, min(1.0, self.smoothing_alpha))
+            smoothed = NormalizedBoundingBox(
+                x=alpha * measured.x + (1.0 - alpha) * previous.x,
+                y=alpha * measured.y + (1.0 - alpha) * previous.y,
+                width=alpha * measured.width + (1.0 - alpha) * previous.width,
+                height=alpha * measured.height + (1.0 - alpha) * previous.height,
+            )
+        return self._cover(smoothed, measured)
+
+    @staticmethod
+    def _cover(box: NormalizedBoundingBox, required: NormalizedBoundingBox) -> NormalizedBoundingBox:
+        """Smallest box containing both, clamped to the normalized 0-100 space.
+
+        Rounding is outward (origin down, far edge up) so the rounded values
+        still contain the required detection.
+        """
+        x1 = max(0.0, min(box.x, required.x))
+        y1 = max(0.0, min(box.y, required.y))
+        x2 = min(100.0, max(box.x + box.width, required.x + required.width))
+        y2 = min(100.0, max(box.y + box.height, required.y + required.height))
+        x1 = math.floor(x1 * 100.0) / 100.0
+        y1 = math.floor(y1 * 100.0) / 100.0
+        x2 = min(100.0, math.ceil(x2 * 100.0) / 100.0)
+        y2 = min(100.0, math.ceil(y2 * 100.0) / 100.0)
+        return NormalizedBoundingBox(
+            x=x1, y=y1,
+            width=round(max(0.1, x2 - x1), 2), height=round(max(0.1, y2 - y1), 2),
+        )
 
     def mark_matched(self, bbox: NormalizedBoundingBox, confidence: float):
-        self.bbox = bbox
+        previous_center = self.center
+        new_center = (bbox.x + bbox.width / 2.0, bbox.y + bbox.height / 2.0)
+        measured = (new_center[0] - previous_center[0], new_center[1] - previous_center[1])
+        # Smooth, and clamp to a plausible per-frame face motion. A single noisy
+        # box cannot send the prediction far from the face.
+        limit = 6.0
+        self.velocity = (
+            max(-limit, min(limit, 0.6 * self.velocity[0] + 0.4 * measured[0])),
+            max(-limit, min(limit, 0.6 * self.velocity[1] + 0.4 * measured[1])),
+        )
+        self.bbox = self._smooth_bbox(bbox)
         self.confidence = confidence
         self.age += 1
         self.hits += 1
@@ -66,54 +143,36 @@ class SingleTrackInternal:
 
 class TrackingService:
     """
-    Stateful BoT-SORT Multi-Object Tracking Service for SafeFrame AI Engine.
-    
+    Stateful lightweight IoU multi-face tracker for SafeFrame AI.
+
     Responsibilities:
-    - Maintains persistent trajectory handles across video frames.
-    - Fuses spatial IoU matching with BoT-SORT camera motion compensation.
-    - Manages trajectory state transitions: NEW, TRACKED, LOST, REMOVED.
-    - Configured dynamically via AISettings (buffer size, confidence thresholds, match ratios).
+    - Maintain persistent trajectory IDs across video frames.
+    - Associate detections with existing trajectories by IoU (globally greedy).
+    - Manage trajectory state transitions: NEW, TRACKED, LOST, REMOVED.
+
+    This is deliberately the only tracker in the system. No BoT-SORT / OSNet
+    binding is initialized or claimed: those packages are not installed and
+    their association behavior has not been validated here.
+
+    Redaction does not depend on this tracker for coverage: every detection in
+    the current frame is masked by BlurService directly. The tracker only
+    supplies identity continuity and the short conservative hold for tracks that
+    are temporarily missed.
     """
 
     def __init__(self) -> None:
-        self.model_manager = model_manager
         self.next_track_id: int = 1
         self.active_tracks: Dict[int, SingleTrackInternal] = {}
         self.max_buffer_frames: int = ai_settings.TRACK_BUFFER_FRAMES
-        self.match_threshold: float = ai_settings.MATCH_THRESHOLD
+        self.match_iou_threshold: float = ai_settings.MATCH_IOU_THRESHOLD
         self.conf_threshold: float = ai_settings.TRACK_CONF_THRESHOLD
-        self.botsort_instance: Optional[Any] = None
-        self._init_botsort_tracker()
-
-    def _init_botsort_tracker(self) -> None:
-        """
-        Attempts to initialize persistent BoxMOT BoT-SORT tracker instance.
-        """
-        try:
-            from boxmot import BoTSORT
-            logger.info("[TrackingService] Initializing persistent BoT-SORT tracker instance via BoxMOT...")
-            self.botsort_instance = BoTSORT(
-                track_high_thresh=self.conf_threshold,
-                track_low_thresh=0.15,
-                new_track_thresh=self.conf_threshold + 0.05,
-                track_buffer=self.max_buffer_frames,
-                match_thresh=self.match_threshold,
-                cmc_method="sparseOptFlow",
-                device=self.model_manager.device,
-            )
-            logger.info("[TrackingService] Successfully Loaded BoT-SORT Tracker")
-        except Exception as e:
-            logger.info(f"[TrackingService] BoT-SORT tracker binding note: {e}. Active stateful tracker ready.")
+        self.total_new_tracks: int = 0
 
     def reset(self) -> None:
         """Resets tracker state for a new video task sequence."""
         self.next_track_id = 1
         self.active_tracks.clear()
-        if self.botsort_instance is not None and hasattr(self.botsort_instance, 'reset'):
-            try:
-                self.botsort_instance.reset()
-            except Exception:
-                pass
+        self.total_new_tracks = 0
         logger.info("[TrackingService] Reset tracking state for new task.")
 
     def update_tracks(
@@ -169,6 +228,7 @@ class TrackingService:
             self.active_tracks[self.next_track_id] = new_track
             self.next_track_id += 1
             new_tracks_count += 1
+            self.total_new_tracks += 1
 
         elapsed_ms = round((time.time() - start_time) * 1000, 2)
         active_schemas = [t.to_schema() for t in self.active_tracks.values() if t.track_state != TrackStateEnum.REMOVED]
@@ -193,38 +253,56 @@ class TrackingService:
         detections: List[DetectionItem]
     ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
         """
-        Executes spatial IoU bipartite matching between active tracks and new detections.
+        Globally greedy IoU association between active tracks and detections.
+
+        All candidate (track, detection) pairs are ranked by IoU before any
+        assignment. Sequential per-detection matching can steal a track's best
+        match during a crossing; ranking first makes that less likely and keeps
+        IDs stable while two faces overlap.
+
         Returns (matched_pairs, unmatched_track_ids, unmatched_detection_indices).
         """
         if not self.active_tracks or not detections:
             return [], list(self.active_tracks.keys()), list(range(len(detections)))
 
-        track_ids = list(self.active_tracks.keys())
+        candidates: List[Tuple[float, float, int, int]] = []
+        for track_id, track in self.active_tracks.items():
+            predicted = track.predicted_bbox()
+            predicted_center = (predicted.x + predicted.width / 2.0,
+                                predicted.y + predicted.height / 2.0)
+            for det_idx, det in enumerate(detections):
+                if track.category != det.category:
+                    continue
+                # Score against both the last observed box and the constant
+                # velocity prediction. During a crossing the prediction keeps
+                # each face's own box as the best match instead of handing the
+                # id to whichever neighbour happens to overlap more.
+                iou = max(self._compute_iou(track.bbox, det.bbox),
+                          self._compute_iou(predicted, det.bbox))
+                if iou < self.match_iou_threshold:
+                    continue
+                det_center = (det.bbox.x + det.bbox.width / 2.0,
+                              det.bbox.y + det.bbox.height / 2.0)
+                distance = abs(det_center[0] - predicted_center[0]) + abs(det_center[1] - predicted_center[1])
+                candidates.append((iou, -distance, track_id, det_idx))
+
+        # Best overlap first; equal overlap is broken by proximity to the
+        # predicted centre so the tie does not depend on dict/insertion order.
+        candidates.sort(reverse=True)
+
         matched_pairs: List[Tuple[int, int]] = []
-        unmatched_tracks: Set[int] = set(track_ids)
+        unmatched_tracks: Set[int] = set(self.active_tracks.keys())
         unmatched_dets: Set[int] = set(range(len(detections)))
+        for _, _, track_id, det_idx in candidates:
+            if track_id in unmatched_tracks and det_idx in unmatched_dets:
+                matched_pairs.append((track_id, det_idx))
+                unmatched_tracks.discard(track_id)
+                unmatched_dets.discard(det_idx)
 
-        # Bipartite IoU matching
-        for det_idx, det in enumerate(detections):
-            best_track_id = None
-            best_iou = 0.0
+        return matched_pairs, sorted(unmatched_tracks), sorted(unmatched_dets)
 
-            for track_id in list(unmatched_tracks):
-                track = self.active_tracks[track_id]
-                if track.category == det.category:
-                    iou = self._compute_iou(track.bbox, det.bbox)
-                    if iou > best_iou and iou >= (1.0 - self.match_threshold):
-                        best_iou = iou
-                        best_track_id = track_id
-
-            if best_track_id is not None:
-                matched_pairs.append((best_track_id, det_idx))
-                unmatched_tracks.remove(best_track_id)
-                unmatched_dets.remove(det_idx)
-
-        return matched_pairs, list(unmatched_tracks), list(unmatched_dets)
-
-    def _compute_iou(self, bboxA: NormalizedBoundingBox, bboxB: NormalizedBoundingBox) -> float:
+    @staticmethod
+    def _compute_iou(bboxA: NormalizedBoundingBox, bboxB: NormalizedBoundingBox) -> float:
         x1_A, y1_A = bboxA.x, bboxA.y
         x2_A, y2_A = bboxA.x + bboxA.width, bboxA.y + bboxA.height
 

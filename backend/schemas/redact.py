@@ -20,20 +20,20 @@ class TaskStatusEnum(str, Enum):
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 class StartRedactionRequest(BaseModel):
     video_id: str = Field(..., example="vid_987654321")
+    # Face redaction is the only validated capability. The other categories are
+    # rejected explicitly by the detector preflight rather than silently ignored.
     target_categories: List[RedactionCategoryEnum] = Field(
-        default=[
-            RedactionCategoryEnum.FACES,
-            RedactionCategoryEnum.LICENSE_PLATES,
-            RedactionCategoryEnum.ID_CARDS,
-            RedactionCategoryEnum.LAPTOP_SCREENS,
-            RedactionCategoryEnum.PHONE_SCREENS,
-        ]
+        default=[RedactionCategoryEnum.FACES]
     )
     blur_style: BlurStyleEnum = Field(default=BlurStyleEnum.GAUSSIAN)
     blur_intensity: int = Field(default=80, ge=10, le=100)
+    # Saves annotated/original/protected frames under storage/debug/<task_id>/.
+    # Those images are never part of the protected video stream.
+    debug_mode: bool = Field(default=False)
 
 class StartRedactionResponse(BaseModel):
     task_id: str = Field(..., example="task_123456789")
@@ -59,6 +59,13 @@ class ProcessingMetricsSchema(BaseModel):
     throughput_frames: int
     total_frames: int
     processed_frames: int
+    frames_with_detections: int = 0
+    masks_total: int = 0
+    new_tracks_total: int = 0
+    detection_latency_ms: float = 0.0
+    blur_latency_ms: float = 0.0
+    avg_processing_fps: float = 0.0
+    debug_frames_saved: int = 0
 
 class TaskStatusResponse(BaseModel):
     task_id: str
@@ -71,9 +78,18 @@ class TaskStatusResponse(BaseModel):
     blur_intensity: int
     metrics: ProcessingMetricsSchema
     recent_logs: List[str]
+    created_at: Optional[str] = None
+    debug_mode: bool = False
+    # Present only for a terminal processing failure. This makes asynchronous
+    # detector/encoder failures explicit without changing successful payloads.
+    failure_reason: Optional[str] = None
+    # Additive: lets clients require a verified output before offering a
+    # download, instead of inferring success from status alone.
+    output_verified: Optional[bool] = None
 
 class TaskSummaryResponse(BaseModel):
     task_id: str
+    # Region-frames: the number of face regions masked across all frames.
     faces_blurred: int
     license_plates_redacted: int
     screens_hidden: int
@@ -81,6 +97,15 @@ class TaskSummaryResponse(BaseModel):
     phones_found: int
     total_objects_count: int
     processing_time_seconds: int
+    frames_processed: int = 0
+    frames_with_detections: int = 0
+    detection_frame_pct: float = 0.0
+    avg_processing_fps: float = 0.0
+    verified_frame_count: Optional[int] = None
+    output_resolution: Optional[str] = None
+    audio_preserved: Optional[bool] = None
+    blur_style: Optional[str] = None
+    blur_intensity: Optional[int] = None
     original_video_url: Optional[str] = None
     protected_video_url: Optional[str] = None
     audit_log_url: Optional[str] = None

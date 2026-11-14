@@ -7,6 +7,7 @@ export interface ToggleSwitchProps {
   description?: string;
   disabled?: boolean;
   icon?: string;
+  badge?: string;
 }
 
 export const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
@@ -16,6 +17,7 @@ export const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
   description,
   disabled = false,
   icon,
+  badge,
 }) => {
   return (
     <label
@@ -36,7 +38,16 @@ export const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
           </span>
         )}
         <div className="flex flex-col">
-          {label && <span className="font-label text-sm font-semibold text-on-surface">{label}</span>}
+          {label && (
+            <span className="font-label text-sm font-semibold text-on-surface flex items-center gap-xs">
+              {label}
+              {badge && (
+                <span className="text-[10px] uppercase tracking-wide border border-outline-variant rounded px-xs py-[1px] text-on-surface-variant">
+                  {badge}
+                </span>
+              )}
+            </span>
+          )}
           {description && (
             <span className="font-body text-xs text-on-surface-variant">{description}</span>
           )}

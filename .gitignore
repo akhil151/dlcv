@@ -12,6 +12,17 @@ dist
 dist-ssr
 *.local
 
+# Local media, model weights, and runtime artifacts
+*.mp4
+*.png
+*.jpg
+*.onnx
+*.pt
+__pycache__/
+.cache/
+.claude/
+backend/storage/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

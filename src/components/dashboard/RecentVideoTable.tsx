@@ -9,6 +9,12 @@ export interface RecentVideoTableProps {
   onViewAllClick?: () => void;
 }
 
+const formatTimestamp = (value: string): string => {
+  const parsed = new Date(value);
+  if (!value || Number.isNaN(parsed.getTime())) return value || '—';
+  return parsed.toLocaleString();
+};
+
 export const RecentVideoTable: React.FC<RecentVideoTableProps> = ({
   videos = [],
   isLoading = false,
@@ -54,7 +60,7 @@ export const RecentVideoTable: React.FC<RecentVideoTableProps> = ({
           <div className="flex flex-col gap-xs max-w-lg">
             <h4 className="font-headline-md text-on-surface font-bold">No Videos Processed Yet</h4>
             <p className="font-body-md text-on-surface-variant text-label-md leading-relaxed">
-              Upload your first video or connect a live camera feed to begin automated face, screen, and license plate redaction.
+              Upload your first video to begin verified face redaction.
             </p>
           </div>
           <button
@@ -99,23 +105,41 @@ export const RecentVideoTable: React.FC<RecentVideoTableProps> = ({
                   {video.filename}
                 </h4>
                 <p className="font-label-sm text-on-surface-variant">
-                  {video.fileSizeMb >= 1000
+                  {video.fileSizeMb >= 1024
                     ? `${(video.fileSizeMb / 1024).toFixed(1)} GB`
-                    : `${video.fileSizeMb} MB`}{' '}
+                    : video.fileSizeMb > 0 && video.fileSizeMb < 1
+                      ? `${Math.round(video.fileSizeMb * 1024)} KB`
+                      : `${video.fileSizeMb.toFixed(1)} MB`}{' '}
                   • Redaction: {Array.isArray(video.targets) ? video.targets.join(', ') : video.targets}
                 </p>
               </div>
 
               <div className="hidden md:block text-right shrink-0">
-                <p className="font-label-md text-on-surface">{video.createdAt}</p>
+                <p className="font-label-md text-on-surface">{formatTimestamp(video.createdAt)}</p>
                 <p className="font-label-sm text-on-surface-variant">
-                  {video.duration || '4K MP4'}
+                  {video.duration || '—'}
                 </p>
               </div>
 
-              <div className="bg-primary/10 text-primary border border-primary/20 px-md py-xs rounded-full flex items-center gap-xs shrink-0">
-                <span className="material-symbols-outlined text-[14px]">check_circle</span>
-                <span className="font-label-sm">{video.status || 'SUCCESS'}</span>
+              <div
+                className={`px-md py-xs rounded-full flex items-center gap-xs shrink-0 border ${
+                  video.status === 'COMPLETED'
+                    ? 'bg-primary/10 text-primary border-primary/20'
+                    : video.status === 'FAILED'
+                      ? 'bg-error/10 text-error border-error/30'
+                      : 'bg-tertiary/10 text-tertiary border-tertiary/30'
+                }`}
+              >
+                <span className="material-symbols-outlined text-[14px]">
+                  {video.status === 'COMPLETED'
+                    ? 'check_circle'
+                    : video.status === 'FAILED'
+                      ? 'error'
+                      : video.status === 'CANCELLED'
+                        ? 'cancel'
+                        : 'progress_activity'}
+                </span>
+                <span className="font-label-sm">{video.status}</span>
               </div>
             </div>
           ))}

@@ -14,13 +14,18 @@ export interface SideNavBarProps {
 
 export const SideNavBar: React.FC<SideNavBarProps> = ({ onNewUploadClick }) => {
   const location = useLocation();
-  const activeTaskId = useAppStore((state) => state.activeTaskId) || 'demo-task';
+  const activeTaskId = useAppStore((state) => state.activeTaskId);
 
+  // Task links only exist once a real task was started; there is no demo task.
   const navItems: NavItem[] = [
     { label: 'Dashboard', path: '/dashboard', icon: 'dashboard' },
     { label: 'Upload', path: '/upload', icon: 'upload_file' },
-    { label: 'Processing', path: `/processing/${activeTaskId}`, icon: 'memory' },
-    { label: 'Results', path: `/results/${activeTaskId}`, icon: 'check_circle' },
+    ...(activeTaskId
+      ? [
+          { label: 'Processing', path: `/processing/${activeTaskId}`, icon: 'memory' },
+          { label: 'Results', path: `/results/${activeTaskId}`, icon: 'check_circle' },
+        ]
+      : []),
   ];
 
   return (

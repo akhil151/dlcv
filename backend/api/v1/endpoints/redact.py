@@ -19,6 +19,11 @@ async def get_task_status(task_id: str):
     """Retrieves live processing status, throughput metrics, and log stream for a task."""
     return redact_service.get_task_status(task_id)
 
+@router.post("/redact/cancel/{task_id}", response_model=TaskStatusResponse, tags=["Redaction"])
+async def cancel_redaction(task_id: str):
+    """Requests cooperative cancellation of a running task."""
+    return redact_service.cancel_redaction(task_id)
+
 @router.get("/redact/results/{task_id}", response_model=TaskSummaryResponse, tags=["Redaction"])
 async def get_task_summary(task_id: str):
     """Retrieves completion breakdown summary stats and download URLs for a completed task."""

@@ -1,6 +1,6 @@
 import time
 import numpy as np
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
 from backend.config.ai_settings import ai_settings
 from backend.schemas.detection import NormalizedBoundingBox, TargetCategory
 from backend.schemas.tracking import TrackedObjectItem, TrackStateEnum
@@ -44,8 +44,12 @@ class SingleKalmanGhostPredictor:
 
     def predict(self) -> Tuple[NormalizedBoundingBox, float, float]:
         """
-        Advances state estimate by 1 frame timestep, updates covariance P,
-        and computes covariance-driven spatial expansion.
+        Advances state estimate by 1 frame timestep and updates covariance P.
+
+        Expansion is bounded (max ~10% total). The predictor receives no
+        measurement updates once the track is lost, so its velocity stays at
+        zero and its box is effectively a static hold. Unbounded exponential
+        growth was removed: it enlarged masks over unrelated scene content.
         """
         # x_k = F * x_{k-1}
         self.x = np.dot(self.F, self.x)
@@ -57,9 +61,10 @@ class SingleKalmanGhostPredictor:
         # Covariance Norm as measure of prediction uncertainty
         covariance_norm = float(np.linalg.norm(self.P))
 
-        # Dynamic expansion factor: combines exponential loss frames with covariance growth
-        cov_expansion = 1.0 + (0.01 * np.sqrt(covariance_norm))
-        exp_factor = max(pow(self.base_expansion_factor, self.ghost_age), cov_expansion)
+        # Bounded expansion: small linear growth, hard-capped.
+        cov_expansion = 1.0 + min(0.02, 0.001 * np.sqrt(covariance_norm))
+        linear_growth = 1.0 + 0.02 * (self.ghost_age - 1)
+        exp_factor = min(1.10, max(linear_growth, cov_expansion))
 
         # Unpack predicted bounding box
         cx, cy, s, r = self.x[0], self.x[1], max(1.0, self.x[2]), max(0.1, self.x[3])
@@ -80,14 +85,13 @@ class SingleKalmanGhostPredictor:
 
 class GhostBoxService:
     """
-    SafeFrame Core Innovation Service: Predictive Ghost Box Preservation Engine.
-    
-    Responsibilities:
-    - Automatically creates dynamic Ghost Boxes when sensitive object tracks transition to LOST state.
-    - Uses 2D Constant Velocity Kalman Filter to estimate spatial motion vectors.
-    - Computes spatial expansion driven by Kalman error covariance growth P(t) + base expansion factor.
-    - Automatically recovers active ghosts when tracks re-appear.
-    - Automatically purges expired ghosts exceeding GHOST_MAX_FRAMES.
+    Short-lived predictive box for lost tracks. DISABLED by default.
+
+    Behavior: creates a box when a track becomes LOST, holds it without
+    validated motion (velocity is never measured), keeps expansion bounded to
+    <=10%, and purges it after GHOST_MAX_FRAMES. It is not described as a
+    validated tracking contribution: the conservative fixed hold in BlurService
+    is what actually bridges short detector gaps.
     """
 
     def __init__(self) -> None:

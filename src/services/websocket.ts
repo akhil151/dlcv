@@ -6,19 +6,22 @@ export class WebSocketManager {
   private ws: WebSocket | null = null;
   private taskId: string | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
-  private reconnectIntervalMs = 2000;
+  private readonly maxReconnectAttempts = 5;
+  private readonly reconnectIntervalMs = 2000;
+  private reconnectTimer: number | null = null;
   private onTelemetryCallback: ((packet: FrameTelemetryPacket) => void) | null = null;
   private onStatusChangeCallback: ((status: WebSocketStatus) => void) | null = null;
   private isIntentionalDisconnect = false;
-
-  constructor() {}
 
   public connect(
     taskId: string,
     onTelemetry: (packet: FrameTelemetryPacket) => void,
     onStatusChange?: (status: WebSocketStatus) => void
   ) {
+    // Never leave an older socket (or its reconnect timer) alive.
+    this.closeSocket();
+    this.clearReconnectTimer();
+
     this.taskId = taskId;
     this.onTelemetryCallback = onTelemetry;
     this.onStatusChangeCallback = onStatusChange || null;
@@ -28,8 +31,31 @@ export class WebSocketManager {
     this.initSocket();
   }
 
+  private clearReconnectTimer() {
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private closeSocket() {
+    if (this.ws) {
+      const socket = this.ws;
+      this.ws = null;
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+      try {
+        socket.close();
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+
   private initSocket() {
-    if (!this.taskId) return;
+    if (!this.taskId || this.isIntentionalDisconnect) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = import.meta.env.VITE_WS_BASE_URL || `${protocol}//localhost:8000/ws/redact`;
@@ -38,19 +64,20 @@ export class WebSocketManager {
     this.notifyStatus('CONNECTING');
 
     try {
-      this.ws = new WebSocket(url);
+      const socket = new WebSocket(url);
+      this.ws = socket;
 
-      this.ws.onopen = () => {
+      socket.onopen = () => {
         this.reconnectAttempts = 0;
         this.notifyStatus('CONNECTED');
         console.log(`[WebSocketManager] Connected to task stream: ${url}`);
       };
 
-      this.ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           if (this.onTelemetryCallback) {
-            // Map snake_case backend keys to camelCase frontend schema
+            // Map snake_case backend keys to the camelCase frontend schema.
             const packet: FrameTelemetryPacket = {
               taskId: data.task_id || this.taskId || '',
               frameIndex: data.frame_index || 0,
@@ -64,9 +91,11 @@ export class WebSocketManager {
               elapsedTime: data.elapsed_time || 0,
               estimatedRemainingTime: data.estimated_remaining_time || 0,
               logLine: data.log_line || '',
+              // The backend only sends packets for real processing events; the
+              // terminal state itself is read from the REST status endpoint.
               status: data.status || 'PROCESSING',
               detectedObjects: (data.detected_objects || []).map((d: any) => ({
-                id: d.id || '',
+                id: String(d.id ?? ''),
                 category: d.category || 'faces',
                 label: d.label || '',
                 confidence: d.confidence || 0,
@@ -80,19 +109,23 @@ export class WebSocketManager {
         }
       };
 
-      this.ws.onerror = (err) => {
-        console.warn('[WebSocketManager] Socket error encountered:', err);
+      socket.onerror = () => {
         this.notifyStatus('ERROR');
       };
 
-      this.ws.onclose = () => {
+      socket.onclose = () => {
+        if (this.ws !== socket) return; // superseded by a newer connection
+        this.ws = null;
         this.notifyStatus('DISCONNECTED');
         if (!this.isIntentionalDisconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
-          this.reconnectAttempts++;
+          this.reconnectAttempts += 1;
           console.log(
-            `[WebSocketManager] Socket closed. Reconnecting attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${this.reconnectIntervalMs}ms...`
+            `[WebSocketManager] Reconnecting ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${this.reconnectIntervalMs}ms`
           );
-          setTimeout(() => this.initSocket(), this.reconnectIntervalMs);
+          this.reconnectTimer = window.setTimeout(() => {
+            this.reconnectTimer = null;
+            this.initSocket();
+          }, this.reconnectIntervalMs);
         }
       };
     } catch (err) {
@@ -103,11 +136,12 @@ export class WebSocketManager {
 
   public disconnect() {
     this.isIntentionalDisconnect = true;
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
+    this.clearReconnectTimer();
+    this.closeSocket();
+    this.taskId = null;
+    this.onTelemetryCallback = null;
     this.notifyStatus('DISCONNECTED');
+    this.onStatusChangeCallback = null;
   }
 
   private notifyStatus(status: WebSocketStatus) {

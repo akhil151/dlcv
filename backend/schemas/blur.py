@@ -19,6 +19,13 @@ class BlurROIPlan(BaseModel):
     y2: int = Field(..., ge=0, description="Bottom-right Y pixel coordinate")
     category: TargetCategory
     is_ghost: bool = Field(default=False)
+    # Un-padded rectangle that tightly contains the requested target. The region
+    # between the core and the padded ROI is margin; feathered rendering may only
+    # blend original pixels in that margin, never inside the core.
+    core_x1: Optional[int] = Field(default=None, ge=0)
+    core_y1: Optional[int] = Field(default=None, ge=0)
+    core_x2: Optional[int] = Field(default=None, ge=0)
+    core_y2: Optional[int] = Field(default=None, ge=0)
 
 class BlurFrameResult(BaseModel):
     """

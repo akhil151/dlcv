@@ -147,7 +147,7 @@ export const LandingPage: React.FC = () => {
               {/* Floating Chips */}
               <div className="absolute -right-8 top-1/4 glass-card p-sm rounded-lg flex items-center gap-sm animate-bounce shadow-xl">
                 <div className="w-2 h-2 bg-primary rounded-full"></div>
-                <span className="font-label-sm text-label-sm">99.8% Confidence</span>
+                <span className="font-label-sm text-label-sm">FACE DETECTED</span>
               </div>
             </div>
           </div>
@@ -412,7 +412,7 @@ export const LandingPage: React.FC = () => {
               </button>
             </div>
             <p className="font-body-lg text-on-surface-variant max-w-xl leading-relaxed">
-              Get custom high-throughput CUDA deployment, dedicated enterprise SLA, and priority support for local or cloud environments.
+              Discuss local deployment options, integration support, and a dedicated pilot for your environment.
             </p>
             <div className="p-lg bg-surface-container rounded-xl border border-outline-variant/60 font-mono text-primary text-base flex items-center justify-between">
               <span>sales@safeframe.ai</span>

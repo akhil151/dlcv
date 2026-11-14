@@ -19,8 +19,9 @@ export const router = createBrowserRouter([
     element: <UploadPage />,
   },
   {
+    // Without a real task id there is nothing to process: no demo task exists.
     path: '/processing',
-    element: <Navigate to="/processing/demo-task" replace />,
+    element: <Navigate to="/upload" replace />,
   },
   {
     path: '/processing/:taskId',
@@ -28,7 +29,7 @@ export const router = createBrowserRouter([
   },
   {
     path: '/results',
-    element: <Navigate to="/results/demo-task" replace />,
+    element: <Navigate to="/dashboard" replace />,
   },
   {
     path: '/results/:taskId',

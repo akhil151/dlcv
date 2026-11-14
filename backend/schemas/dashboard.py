@@ -9,7 +9,7 @@ class DashboardStats(BaseModel):
 class RecentVideoSchema(BaseModel):
     id: str
     filename: str
-    file_size_mb: int
+    file_size_mb: float
     targets: List[str]
     thumbnail_url: str
     created_at: str

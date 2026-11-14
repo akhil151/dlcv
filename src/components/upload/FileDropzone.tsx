@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { ACCEPTED_VIDEO_EXTENSIONS } from '../../types';
 
 export interface FileDropzoneProps {
   onFileSelect: (file: File) => void;
@@ -7,19 +8,19 @@ export interface FileDropzoneProps {
 
 export const FileDropzone: React.FC<FileDropzoneProps> = ({
   onFileSelect,
-  acceptedFormats = ['MP4', 'AVI', 'MOV'],
+  acceptedFormats = ['MP4', 'AVI', 'MOV', 'MKV', 'WebM'],
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const openPicker = () => fileInputRef.current?.click();
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(true);
   };
 
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-  };
+  const handleDragLeave = () => setIsDragOver(false);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -33,18 +34,28 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
     if (e.target.files && e.target.files.length > 0) {
       onFileSelect(e.target.files[0]);
     }
+    // Allow re-selecting the same file (which still re-uploads and resets state).
+    e.target.value = '';
   };
 
   return (
-    <div className="flex-[2] flex flex-col gap-lg w-full">
-      {/* Drag and Drop Canvas */}
+    <div className="flex flex-col gap-lg w-full">
       <div
         id="drop-zone"
+        role="button"
+        tabIndex={0}
+        aria-label="Select a video file to upload"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
-        className={`drag-area-dashed rounded-xl flex flex-col items-center justify-center p-xl group cursor-pointer transition-all ${
+        onClick={openPicker}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openPicker();
+          }
+        }}
+        className={`drag-area-dashed rounded-xl flex flex-col items-center justify-center p-xl group cursor-pointer transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
           isDragOver ? 'bg-surface-container-high border-primary' : 'hover:bg-surface-container-low'
         } min-h-[380px]`}
       >
@@ -57,7 +68,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
         </h3>
 
         <p className="font-body-md text-body-md text-on-surface-variant text-center opacity-70">
-          Supported formats:{' '}
+          Supported containers:{' '}
           {acceptedFormats.map((fmt, idx) => (
             <React.Fragment key={fmt}>
               <span className="text-primary-fixed font-semibold">{fmt}</span>
@@ -65,12 +76,15 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
             </React.Fragment>
           ))}
         </p>
+        <p className="font-label-sm text-on-surface-variant opacity-60 mt-xs text-center">
+          The file must contain a decodable video stream; it is verified server-side before processing.
+        </p>
 
         <input
           ref={fileInputRef}
           id="file-input"
           type="file"
-          accept=".mp4,.avi,.mov"
+          accept={ACCEPTED_VIDEO_EXTENSIONS.join(',')}
           onChange={handleInputChange}
           className="hidden"
         />
@@ -79,7 +93,7 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            fileInputRef.current?.click();
+            openPicker();
           }}
           className="mt-xl px-xl py-md border border-outline-variant rounded-lg font-label-md text-on-surface hover:bg-surface-variant transition-colors cursor-pointer"
         >
@@ -87,12 +101,11 @@ export const FileDropzone: React.FC<FileDropzoneProps> = ({
         </button>
       </div>
 
-      {/* Local Security Guarantee */}
       <div className="flex items-center gap-md p-md bg-surface-container-lowest rounded-lg border border-outline-variant/30">
-        <span className="material-symbols-outlined text-primary">security</span>
+        <span className="material-symbols-outlined text-primary">storage</span>
         <p className="font-label-sm text-label-sm text-on-surface-variant">
-          All files are processed locally or within encrypted secure instances. Your raw data is
-          never stored without your explicit consent.
+          Videos are stored in this project's local backend storage for processing. They are not
+          sent to any third-party service.
         </p>
       </div>
     </div>

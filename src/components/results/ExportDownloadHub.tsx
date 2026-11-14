@@ -1,12 +1,12 @@
 import React from 'react';
 
 export interface ExportDownloadHubProps {
-  onDownloadAuditLog?: () => void;
-  onReEditClick?: () => void;
+  onDownloadProtected: () => void;
+  onReEditClick: () => void;
 }
 
 export const ExportDownloadHub: React.FC<ExportDownloadHubProps> = ({
-  onDownloadAuditLog,
+  onDownloadProtected,
   onReEditClick,
 }) => {
   return (
@@ -14,11 +14,11 @@ export const ExportDownloadHub: React.FC<ExportDownloadHubProps> = ({
       <div className="flex flex-wrap gap-md">
         <button
           type="button"
-          onClick={onDownloadAuditLog}
+          onClick={onDownloadProtected}
           className="border border-outline-variant text-on-surface px-lg py-sm rounded-lg font-label-md hover:bg-surface-variant transition-colors flex items-center gap-sm cursor-pointer"
         >
-          <span className="material-symbols-outlined text-[18px]">assessment</span>
-          <span>View Processing Report</span>
+          <span className="material-symbols-outlined text-[18px]">download</span>
+          <span>Save Protected Video</span>
         </button>
         <button
           type="button"
@@ -31,8 +31,10 @@ export const ExportDownloadHub: React.FC<ExportDownloadHubProps> = ({
       </div>
 
       <div className="flex items-center gap-sm text-on-surface-variant">
-        <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-        <span className="font-label-sm">System Status: Optimal</span>
+        <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+        <span className="font-label-sm">
+          Output integrity verified (full decode + frame count)
+        </span>
       </div>
     </section>
   );

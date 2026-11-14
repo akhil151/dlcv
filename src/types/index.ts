@@ -5,20 +5,18 @@ export type RedactionCategory =
   | 'laptop_screens'
   | 'phone_screens';
 
-export type BlurStyle = 'gaussian' | 'pixelate' | 'blackout' | 'feathered';
+/**
+ * Face redaction is the only validated capability. The other categories are
+ * shown in the UI as "Coming Later" and are never sent to the backend.
+ */
+export const SUPPORTED_CATEGORIES: RedactionCategory[] = ['faces'];
 
-export type TaskStatus = 'PENDING' | 'UPLOADING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+/** Client-side pre-check only; the backend validates the actual container. */
+export const ACCEPTED_VIDEO_EXTENSIONS = ['.mp4', '.avi', '.mov', '.mkv', '.webm'];
 
-export type PipelineStage =
-  | 'OPENING_VIDEO'
-  | 'READING_FRAME'
-  | 'DETECTION'
-  | 'TRACKING'
-  | 'REIDENTIFICATION'
-  | 'GHOST_BOX'
-  | 'BLUR'
-  | 'ENCODING'
-  | 'COMPLETED';
+export type BlurStyle = 'gaussian' | 'pixelate' | 'blackout';
+
+export type TaskStatus = 'PENDING' | 'UPLOADING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
 export interface VideoMetadata {
   videoId: string;
@@ -27,6 +25,8 @@ export interface VideoMetadata {
   format: string;
   resolution: string;
   durationSeconds: number;
+  fps: number;
+  frameCount: number;
   estimatedProcessingSeconds: number;
 }
 
@@ -52,69 +52,32 @@ export interface ProcessingMetrics {
   throughputFrames: number;
   totalFrames: number;
   processedFrames: number;
-}
-
-export interface DetectionMetrics {
-  map50: number;
-  map5095: number;
-  precision: number;
-  recall: number;
-  f1Score: number;
-}
-
-export interface TrackingMetrics {
-  mota: number;
-  motp: number;
-  idf1: number;
-  idSwitches: number;
-  mostlyTrackedCount: number;
-  mostlyLostCount: number;
-}
-
-export interface PrivacyMetrics {
-  privacyLeakageRatePct: number;
-  meanLeakDurationFrames: number;
-  ghostRecoveryRatePct: number;
-  avgGhostLifetimeFrames: number;
-  blurCoveragePct: number;
-  framesProtectedPct: number;
-}
-
-export interface PerformanceMetrics {
-  avgFps: number;
+  framesWithDetections: number;
+  masksTotal: number;
+  newTracksTotal: number;
   detectionLatencyMs: number;
-  trackingLatencyMs: number;
-  reidLatencyMs: number;
-  ghostLatencyMs: number;
   blurLatencyMs: number;
-  pipelineLatencyMs: number;
-  peakMemoryMb: number;
-}
-
-export interface EvaluationReport {
-  taskId: string;
-  totalFramesEvaluated: number;
-  evaluatedAt: string;
-  benchmarkPassed: boolean;
-  detectionMetrics: DetectionMetrics;
-  trackingMetrics: TrackingMetrics;
-  privacyMetrics: PrivacyMetrics;
-  performanceMetrics: PerformanceMetrics;
+  avgProcessingFps: number;
+  debugFramesSaved: number;
 }
 
 export interface RedactionSummary {
   taskId: string;
+  /** Face regions masked across all frames (region-frames). */
   facesBlurred: number;
-  licensePlatesRedacted: number;
-  screensHidden: number;
-  idCardsFound: number;
-  phonesFound: number;
   totalObjectsCount: number;
   processingTimeSeconds: number;
+  framesProcessed: number;
+  framesWithDetections: number;
+  detectionFramePct: number;
+  avgProcessingFps: number;
+  verifiedFrameCount?: number;
+  outputResolution?: string;
+  audioPreserved?: boolean;
+  blurStyle?: string;
+  blurIntensity?: number;
   originalVideoUrl?: string;
   protectedVideoUrl?: string;
-  auditLogUrl?: string;
-  evaluationReport?: EvaluationReport;
 }
 
 export interface RedactionTask {
@@ -128,8 +91,12 @@ export interface RedactionTask {
   blurIntensity: number;
   metrics: ProcessingMetrics;
   recentLogs: string[];
-  summary?: RedactionSummary;
   createdAt: string;
+  debugMode: boolean;
+  /** Backend-reported verification flag. Undefined until the task is terminal. */
+  outputVerified?: boolean;
+  /** Present for FAILED/CANCELLED tasks; null otherwise. */
+  failureReason?: string | null;
 }
 
 export interface RecentVideoItem {
@@ -140,7 +107,7 @@ export interface RecentVideoItem {
   thumbnailUrl: string;
   createdAt: string;
   duration: string;
-  status: 'COMPLETED' | 'PROCESSING' | 'FAILED';
+  status: 'COMPLETED' | 'PROCESSING' | 'FAILED' | 'CANCELLED';
 }
 
 export interface StartRedactionRequest {
@@ -148,6 +115,7 @@ export interface StartRedactionRequest {
   targetCategories: RedactionCategory[];
   blurStyle: BlurStyle;
   blurIntensity: number;
+  debugMode?: boolean;
 }
 
 export interface FrameTelemetryPacket {
@@ -165,4 +133,22 @@ export interface FrameTelemetryPacket {
   logLine?: string;
   status: string;
   detectedObjects: DetectedEntity[];
+}
+
+export interface ReadinessSnapshot {
+  status: 'ready' | 'unavailable';
+  process: string;
+  modelsLoaded: boolean;
+  detector: {
+    name: string;
+    available: boolean;
+    status: string;
+    device: string;
+  };
+  ffmpeg: {
+    available: boolean;
+    version?: string | null;
+  };
+  processingReady: boolean;
+  reasons: string[];
 }

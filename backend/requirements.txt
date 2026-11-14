@@ -5,3 +5,14 @@ pydantic-settings>=2.2.0
 python-multipart>=0.0.9
 websockets>=12.0
 python-dotenv>=1.0.1
+
+# Video decoding + YuNet ONNX inference (cv2.FaceDetectorYN) and frame math.
+opencv-python>=4.8.0
+numpy>=1.24
+
+# Test tooling: backend/tests (pytest) and the HTTP smoke test (requests).
+pytest>=8.0
+requests>=2.31
+
+# FFmpeg is a system binary, not a pip package. Install it and put it on PATH
+# (Windows: https://www.gyan.dev/ffmpeg/builds/), or set FFMPEG_PATH.

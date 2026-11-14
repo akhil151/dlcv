@@ -42,13 +42,8 @@ interface AppState {
   resetUploadDraft: () => void;
 }
 
-const DEFAULT_CATEGORIES: RedactionCategory[] = [
-  'faces',
-  'license_plates',
-  'id_cards',
-  'laptop_screens',
-  'phone_screens',
-];
+// Only face redaction is validated; see SUPPORTED_CATEGORIES.
+const DEFAULT_CATEGORIES: RedactionCategory[] = ['faces'];
 
 export const useAppStore = create<AppState>((set) => ({
   selectedFile: null,
@@ -79,7 +74,8 @@ export const useAppStore = create<AppState>((set) => ({
 
   setSelectedCategories: (categories) => set({ selectedCategories: categories }),
   setBlurStyle: (style) => set({ blurStyle: style }),
-  setBlurIntensity: (intensity) => set({ blurIntensity: intensity }),
+  setBlurIntensity: (intensity) =>
+    set({ blurIntensity: Math.min(100, Math.max(10, Math.round(intensity))) }),
 
   setActiveTaskId: (taskId) => set({ activeTaskId: taskId }),
   setActiveTask: (task) => set({ activeTask: task }),

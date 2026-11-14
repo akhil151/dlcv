@@ -1,5 +1,9 @@
+import asyncio
+import contextlib
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+
 from backend.config.settings import settings
 from backend.core.logging import setup_logging, logger
 from backend.core.exceptions import (
@@ -14,6 +18,21 @@ from backend.services.ai import model_manager
 # Initialize logger
 setup_logging()
 
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Loads the face detector at startup.
+
+    Warmup runs off the event loop so the API accepts requests immediately. A
+    detector failure is recorded in its status and surfaced by /health/readiness;
+    it is never replaced by a substitute detector.
+    """
+    logger.info("Starting %s backend service...", settings.PROJECT_NAME)
+    await asyncio.to_thread(model_manager.warmup)
+    yield
+    logger.info("Shutting down SafeFrame AI backend service...")
+
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Backend API platform for SafeFrame AI Privacy Redaction Engine",
@@ -21,6 +40,7 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url=f"{settings.API_V1_STR}/docs",
     redoc_url=f"{settings.API_V1_STR}/redoc",
+    lifespan=lifespan,
 )
 
 # CORS Configuration
@@ -39,6 +59,7 @@ app.add_exception_handler(Exception, global_exception_handler)
 # Include API v1 Routers
 app.include_router(api_v1_router, prefix=settings.API_V1_STR)
 
+
 # WebSocket Telemetry Endpoint
 @app.websocket("/ws/redact/{task_id}")
 async def websocket_redaction_telemetry(websocket: WebSocket, task_id: str):
@@ -54,15 +75,6 @@ async def websocket_redaction_telemetry(websocket: WebSocket, task_id: str):
         logger.warning(f"WebSocket error on task '{task_id}': {e}")
         ws_manager.disconnect(websocket, task_id)
 
-@app.on_event("startup")
-async def startup_event():
-    logger.info(f"Starting {settings.PROJECT_NAME} backend service...")
-    # Execute ModelManager initialization & CUDA warmup
-    model_manager.warmup()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("Shutting down SafeFrame AI backend service...")
 
 if __name__ == "__main__":
     import uvicorn

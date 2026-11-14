@@ -6,15 +6,21 @@ from typing import Dict, Any, Optional, Tuple
 from backend.config.ai_settings import ai_settings
 from backend.core.logging import logger
 
+# .../backend/services/ai/model_manager.py -> project root (four levels up).
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 class ModelManager:
     """
     Thread-safe Singleton ModelManager for SafeFrame AI Engine.
-    
+
     Responsibilities:
-    - Auto-detect CUDA GPU vs CPU hardware capabilities.
-    - Initialize pretrained neural network weights (YOLO11m, OSNet x0.25, YuNet Face Detector) exactly once.
-    - Maintain single-instance memory cache across all API requests.
-    - Perform CUDA FP16 tensor warmup during server startup.
+    - Load the face detector (YuNet ONNX) exactly once.
+    - Report explicit LOADED / UNAVAILABLE / ERROR status for it.
+
+    The bundled YOLO11m weights and the OSNet Re-ID model are deliberately not
+    loaded: they are not used by any active stage (YOLO has no face semantics
+    and Re-ID is not wired into association). Loading them only added startup
+    cost and memory, and made readiness reports misleading.
     """
     _instance: Optional['ModelManager'] = None
     _lock: threading.Lock = threading.Lock()
@@ -36,148 +42,141 @@ class ModelManager:
                 return
 
             self._initialized = True
-            self.device, self.is_cuda, self.vram_gb = self._resolve_hardware_device()
+            # Keep imports and API routing lightweight. Hardware probing and
+            # model loading occur only when a processing job is preflighted or
+            # startup warmup explicitly requests them.
+            self.device, self.is_cuda, self.vram_gb = "cpu", False, 0.0
             self.models: Dict[str, Any] = {}
+            self.models_loaded: bool = False
             self.is_warmed_up: bool = False
-            self._load_models()
 
     def _resolve_hardware_device(self) -> Tuple[str, bool, float]:
+        """Returns the inference device actually used by the active detector.
+
+        YuNet runs through OpenCV's DNN backend on CPU in this build; no CUDA
+        execution path is active, so none is claimed.
         """
-        Detects CUDA hardware availability and returns active device string, boolean flag, and total VRAM GB.
+        logger.info("[ModelManager] Detector device: CPU (OpenCV DNN, YuNet ONNX).")
+        return "cpu", False, 0.0
+
+    def resolve_yunet_path(self) -> str:
+        """Resolves the YuNet weight path irrespective of the working directory.
+
+        An absolute configured path is used as-is. A relative path is resolved
+        against the project root first, then against the current working
+        directory as a fallback.
         """
-        if ai_settings.FORCE_CPU:
-            logger.info("[ModelManager] Force CPU flag enabled. Targeting CPU execution.")
-            return "cpu", False, 0.0
+        configured = ai_settings.YUNET_MODEL_PATH
+        if os.path.isabs(configured):
+            return configured
+        project_candidate = os.path.join(PROJECT_ROOT, configured)
+        if os.path.isfile(project_candidate):
+            return project_candidate
+        cwd_candidate = os.path.abspath(configured)
+        if os.path.isfile(cwd_candidate):
+            return cwd_candidate
+        return project_candidate
 
-        try:
-            import torch
-            if torch.cuda.is_available():
-                device_id = 0
-                gpu_name = torch.cuda.get_device_name(device_id)
-                vram_gb = round(torch.cuda.get_device_properties(device_id).total_memory / (1024 ** 3), 2)
-                logger.info(
-                    f"[ModelManager] Hardware Acceleration: CUDA GPU Detected -> {gpu_name} "
-                    f"({vram_gb} GB VRAM). Device: 'cuda:0'"
-                )
-                return "cuda:0", True, vram_gb
-            else:
-                logger.info("[ModelManager] CUDA GPU not available. Falling back to CPU execution.")
-                return "cpu", False, 0.0
-        except ImportError:
-            logger.warning("[ModelManager] PyTorch package not installed. Operating in CPU mode.")
-            return "cpu", False, 0.0
+    def _load_yunet(self) -> Tuple[Optional[Any], str, str, str]:
+        """Initializes YuNet and returns (model, status, detail, resolved_path).
 
-    def _load_models(self) -> None:
+        status is one of LOADED / UNAVAILABLE / ERROR. Failures are explicit and
+        never trigger a substitute detector.
         """
-        Initializes AI model handles and loads pretrained weight caches into device memory.
-        """
-        logger.info(f"[ModelManager] Loading model weights into device memory ({self.device})...")
-        start_time = time.time()
-
-        # ---------------------------------------------------------
-        # 1. Load Primary Multi-Class Detector (YOLO11m)
-        # ---------------------------------------------------------
-        yolo_path = ai_settings.YOLO_MODEL_PATH
-        yolo_model_obj = None
-        try:
-            from ultralytics import YOLO
-            logger.info(f"[ModelManager] Loading YOLO11m weights from '{yolo_path}'...")
-            yolo_model_obj = YOLO(yolo_path)
-            if self.is_cuda:
-                yolo_model_obj.to(self.device)
-            logger.info("[ModelManager] Successfully Loaded YOLO11m")
-        except Exception as e:
-            logger.warning(
-                f"[ModelManager] Real YOLO11m weight file '{yolo_path}' not directly initialized ({e}). "
-                "Using pipeline model handle fallback."
-            )
-
-        self.models["yolo"] = {
-            "model": yolo_model_obj,
-            "name": "YOLO11m",
-            "weights_path": yolo_path,
-            "status": "LOADED" if yolo_model_obj is not None else "FALLBACK_READY",
-            "device": self.device,
-            "half_precision": self.is_cuda and ai_settings.HALF_PRECISION,
-        }
-
-        # ---------------------------------------------------------
-        # 2. Load Re-Identification Model (OSNet x0.25)
-        # ---------------------------------------------------------
-        osnet_model_obj = None
-        try:
-            import torch
-            try:
-                import torchreid
-                logger.info(f"[ModelManager] Loading OSNet x0.25 via TorchReID on device '{self.device}'...")
-                osnet_model_obj = torchreid.models.build_model(
-                    name="osnet_x0_25",
-                    num_classes=1000,
-                    pretrained=True
-                )
-                osnet_model_obj.to(self.device)
-                osnet_model_obj.eval()
-                logger.info("[ModelManager] Successfully Loaded OSNet")
-            except ImportError:
-                logger.info("[ModelManager] TorchReID package not present. OSNet ready for torch module binding.")
-        except Exception as e:
-            logger.warning(f"[ModelManager] OSNet model weight loading note: {e}")
-
-        self.models["osnet"] = {
-            "model": osnet_model_obj,
-            "name": ai_settings.REID_MODEL_NAME,
-            "embedding_dim": ai_settings.EMBEDDING_DIM,
-            "status": "LOADED" if osnet_model_obj is not None else "FALLBACK_READY",
-            "device": self.device,
-        }
-
-        # ---------------------------------------------------------
-        # 3. Load Secondary Face Detector (YuNet / MediaPipe)
-        # ---------------------------------------------------------
-        yunet_model_obj = None
+        resolved = self.resolve_yunet_path()
         try:
             import cv2
-            yunet_path = "face_detection_yunet_2023mar.onnx"
-            if os.path.exists(yunet_path) and hasattr(cv2, "FaceDetectorYN"):
-                logger.info(f"[ModelManager] Loading YuNet ONNX model from '{yunet_path}'...")
-                yunet_model_obj = cv2.FaceDetectorYN.create(
-                    model=yunet_path,
-                    config="",
-                    input_size=(320, 320),
-                    score_threshold=ai_settings.SECONDARY_FACE_CONF_THRESHOLD,
-                    nms_threshold=0.3,
-                    top_k=5000
-                )
-                logger.info("[ModelManager] Successfully Loaded YuNet")
-            else:
-                logger.info("[ModelManager] YuNet ONNX weight file or OpenCV DNN module ready for binding.")
-        except Exception as e:
-            logger.warning(f"[ModelManager] YuNet initialization note: {e}")
+        except Exception as exc:  # pragma: no cover - OpenCV is a hard dependency
+            return None, "UNAVAILABLE", f"OpenCV is not importable: {exc}", resolved
+
+        if not os.path.isfile(resolved):
+            return (None, "UNAVAILABLE",
+                    f"YuNet ONNX weights not found at '{resolved}'. "
+                    "Set YUNET_MODEL_PATH or place face_detection_yunet_2023mar.onnx in the project root.",
+                    resolved)
+        if os.path.getsize(resolved) == 0:
+            return None, "UNAVAILABLE", f"YuNet ONNX weights at '{resolved}' are empty (0 bytes).", resolved
+        if not hasattr(cv2, "FaceDetectorYN"):
+            return (None, "UNAVAILABLE",
+                    "This OpenCV build does not expose cv2.FaceDetectorYN; the YuNet detector cannot be constructed.",
+                    resolved)
+
+        try:
+            logger.info(f"[ModelManager] Loading YuNet ONNX model from '{resolved}'...")
+            model = cv2.FaceDetectorYN.create(
+                model=resolved,
+                config="",
+                input_size=(320, 320),
+                score_threshold=ai_settings.SECONDARY_FACE_CONF_THRESHOLD,
+                nms_threshold=0.3,
+                top_k=5000,
+            )
+            if model is None:
+                return None, "ERROR", "cv2.FaceDetectorYN.create returned no detector.", resolved
+            logger.info("[ModelManager] Successfully Loaded YuNet")
+            return model, "LOADED", "ok", resolved
+        except Exception as exc:
+            return None, "ERROR", f"YuNet initialization failed for '{resolved}': {exc}", resolved
+
+    def detector_readiness(self) -> Dict[str, Any]:
+        """Cheap, non-loading snapshot of the face-detector dependency.
+
+        If models are already loaded the cached handle is reported. Otherwise a
+        filesystem-only probe is performed (no YOLO/OSNet loading, no inference).
+        """
+        handle = self.models.get("secondary_face")
+        if handle is not None:
+            return {
+                "available": handle.get("status") == "LOADED",
+                "status": handle.get("status"),
+                "detail": handle.get("detail", ""),
+                "weights_path": handle.get("weights_path"),
+            }
+        resolved = self.resolve_yunet_path()
+        if not os.path.isfile(resolved):
+            return {"available": False, "status": "UNAVAILABLE",
+                    "detail": f"YuNet ONNX weights not found at '{resolved}'.", "weights_path": resolved}
+        if os.path.getsize(resolved) == 0:
+            return {"available": False, "status": "UNAVAILABLE",
+                    "detail": f"YuNet ONNX weights at '{resolved}' are empty (0 bytes).", "weights_path": resolved}
+        return {"available": True, "status": "PRESENT",
+                "detail": "weights present; detector not yet initialized", "weights_path": resolved}
+
+    def _load_models(self) -> None:
+        """Initializes the only active model: the YuNet face detector."""
+        if self.models_loaded:
+            return
+        self.device, self.is_cuda, self.vram_gb = self._resolve_hardware_device()
+        logger.info("[ModelManager] Initializing face detector (%s)...", self.device)
+        start_time = time.time()
+
+        # A missing/invalid weight file must never silently degrade to fabricated
+        # detections: the status is recorded and the detector stays unavailable.
+        yunet_model_obj, yunet_status, yunet_detail, yunet_path = self._load_yunet()
 
         self.models["secondary_face"] = {
             "model": yunet_model_obj,
             "name": ai_settings.FACE_DETECTOR_MODEL.upper(),
-            "status": "LOADED" if yunet_model_obj is not None else "FALLBACK_READY",
+            "status": yunet_status,
+            "detail": yunet_detail,
+            "weights_path": yunet_path,
             "device": "cpu",
         }
 
         elapsed = round(time.time() - start_time, 3)
-        fp16_status = "Enabled" if (self.is_cuda and ai_settings.HALF_PRECISION) else "Disabled"
-        
-        # Summary Logging Required by Specification
+        self.models_loaded = True
         logger.info("==================================================")
+        logger.info(f"[ModelManager] Detector: YuNet ({self.models['secondary_face']['status']})")
         logger.info(f"[ModelManager] Device: {self.device}")
-        logger.info(f"[ModelManager] FP16 enabled: {fp16_status}")
-        logger.info(f"[ModelManager] VRAM: {self.vram_gb} GB")
-        logger.info(f"[ModelManager] Loaded YOLO11m: {self.models['yolo']['status']}")
-        logger.info(f"[ModelManager] Loaded OSNet: {self.models['osnet']['status']}")
-        logger.info(f"[ModelManager] Loaded YuNet: {self.models['secondary_face']['status']}")
-        logger.info(f"[ModelManager] Startup loading completed in {elapsed}s.")
+        logger.info(f"[ModelManager] Initialization completed in {elapsed}s.")
         logger.info("==================================================")
 
     def warmup(self) -> None:
-        """
-        Executes dummy tensor forward passes during startup to pre-compile CUDA kernels.
+        """Loads the detector at startup and runs one inference so the first task
+        does not pay the initialization cost.
+
+        A failure is recorded explicitly by the detector status; it is never
+        masked by a substitute detector.
         """
         if self.is_warmed_up:
             return
@@ -186,32 +185,25 @@ class ModelManager:
             if self.is_warmed_up:
                 return
 
-            logger.info(f"[ModelManager] Executing model warmup on device '{self.device}'...")
+            self._load_models()
+            logger.info("[ModelManager] Warming up YuNet detector...")
             warmup_start = time.time()
-
             try:
-                # 1. Warm up YOLO if real model loaded
-                if self.models.get("yolo", {}).get("model") is not None:
-                    import torch
-                    dummy_img = torch.zeros((1, 3, 640, 640), device=self.device)
-                    if ai_settings.HALF_PRECISION and self.is_cuda:
-                        dummy_img = dummy_img.half()
-                    _ = self.models["yolo"]["model"](dummy_img)
+                import numpy as np
 
-                # 2. Warm up CUDA memory context
-                if self.is_cuda:
-                    import torch
-                    dummy_input = torch.zeros((1, 3, 640, 640), device=self.device)
-                    _ = torch.matmul(dummy_input.view(1, -1), dummy_input.view(-1, 1))
-                    torch.cuda.synchronize()
-
+                handle = self.models.get("secondary_face", {})
+                detector = handle.get("model")
+                if detector is not None:
+                    detector.setInputSize((640, 480))
+                    detector.detect(np.zeros((480, 640, 3), dtype=np.uint8))
                 self.is_warmed_up = True
-                elapsed = round(time.time() - warmup_start, 3)
-                logger.info(f"[ModelManager] CUDA model warmup successfully completed in {elapsed}s.")
-            except Exception as e:
-                logger.warning(f"[ModelManager] Model warmup warning: {e}. Pipeline operational.")
+                logger.info("[ModelManager] Detector warmup completed in %ss",
+                            round(time.time() - warmup_start, 3))
+            except Exception as exc:
+                logger.warning("[ModelManager] Detector warmup failed: %s", exc)
 
     def get_model(self, model_key: str) -> Dict[str, Any]:
+        self._load_models()
         if model_key not in self.models:
             raise KeyError(f"Model handle '{model_key}' not found in ModelManager. Available: {list(self.models.keys())}")
         return self.models[model_key]

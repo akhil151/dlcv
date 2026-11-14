@@ -12,29 +12,7 @@ export interface StatOverviewGridProps {
   stats?: StatItem[];
 }
 
-const DEFAULT_STATS: StatItem[] = [
-  {
-    id: 'videos-processed',
-    label: 'Videos Processed',
-    value: '12',
-    subtext: '+2 today',
-    colorVariant: 'primary',
-  },
-  {
-    id: 'objects-detected',
-    label: 'Objects Detected',
-    value: '1,402',
-    subtext: 'Across 180m',
-    colorVariant: 'secondary',
-  },
-  {
-    id: 'avg-processing-time',
-    label: 'Avg Processing Time',
-    value: '45s',
-    subtext: '-5% efficiency',
-    colorVariant: 'tertiary',
-  },
-];
+const DEFAULT_STATS: StatItem[] = [];
 
 export const StatOverviewGrid: React.FC<StatOverviewGridProps> = ({
   stats = DEFAULT_STATS,

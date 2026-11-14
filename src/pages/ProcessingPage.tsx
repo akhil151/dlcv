@@ -5,123 +5,229 @@ import { DualStreamViewer } from '../components/processing/DualStreamViewer';
 import { MetricsBar } from '../components/processing/MetricsBar';
 import { TelemetryConsole } from '../components/processing/TelemetryConsole';
 import { useAppStore } from '../store/useAppStore';
+import { api } from '../services/api';
 import { wsManager, type WebSocketStatus } from '../services/websocket';
 import type { ProcessingMetrics } from '../types';
 
+const POLL_INTERVAL_MS = 2000;
+
+const TERMINAL_STATUSES = ['COMPLETED', 'FAILED', 'CANCELLED'];
+
+const EMPTY_METRICS: ProcessingMetrics = {
+  fps: 0,
+  elapsedSeconds: 0,
+  remainingSeconds: 0,
+  throughputFrames: 0,
+  totalFrames: 0,
+  processedFrames: 0,
+  framesWithDetections: 0,
+  masksTotal: 0,
+  newTracksTotal: 0,
+  detectionLatencyMs: 0,
+  blurLatencyMs: 0,
+  avgProcessingFps: 0,
+  debugFramesSaved: 0,
+};
+
 export const ProcessingPage: React.FC = () => {
   const navigate = useNavigate();
-  const { taskId = 'demo-task' } = useParams();
+  const { taskId = '' } = useParams();
 
   const {
+    activeTask,
     latestTelemetry,
     wsStatus,
+    setActiveTask,
     setLatestTelemetry,
     setWsStatus,
   } = useAppStore();
 
-  const [logs, setLogs] = useState<string[]>([
-    `[${new Date().toLocaleTimeString()}] SafeFrame AI Neural Worker initialized for Task #${taskId}`,
-    `[${new Date().toLocaleTimeString()}] Connecting to live WebSocket telemetry stream...`,
-  ]);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
 
-  // Connect to live WebSocket telemetry endpoint
+  const status = activeTask?.status;
+  const isVerifiedComplete = status === 'COMPLETED' && activeTask?.outputVerified === true;
+  const isFailed = status === 'FAILED' || status === 'CANCELLED';
+  const isProcessing = !isVerifiedComplete && !isFailed;
+
+  // Authoritative REST status: fetched immediately and polled until terminal.
+  // WebSocket telemetry is used for live detail only, never for terminal state.
   useEffect(() => {
     if (!taskId) return;
+    let cancelled = false;
+    let timer: number | undefined;
 
+    const poll = async () => {
+      try {
+        const task = await api.getTaskStatus(taskId);
+        if (cancelled) return;
+        setActiveTask(task);
+        setStatusError(null);
+        if (task.status === 'COMPLETED') {
+          if (task.outputVerified) {
+            navigate(`/results/${taskId}`);
+          } else {
+            setStatusError('The task reported completion without a verified protected output.');
+          }
+          return;
+        }
+        if (task.status === 'FAILED' || task.status === 'CANCELLED') {
+          return;
+        }
+      } catch (err: any) {
+        if (cancelled) return;
+        // Keep polling: a transient failure must not be reported as completion.
+        setStatusError(err?.message || 'Unable to read task status from the server.');
+      }
+      if (!cancelled) timer = window.setTimeout(poll, POLL_INTERVAL_MS);
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [taskId, navigate, setActiveTask]);
+
+  // Live WebSocket telemetry (detail only).
+  useEffect(() => {
+    if (!taskId) return;
     wsManager.connect(
       taskId,
       (packet) => {
         setLatestTelemetry(packet);
         if (packet.logLine) {
-          setLogs((prev) => [...prev, packet.logLine as string]);
-        }
-        if (packet.status === 'COMPLETED' || (packet.progressPct && packet.progressPct >= 100)) {
-          setTimeout(() => {
-            navigate(`/results/${taskId}`);
-          }, 1200);
+          setLogs((prev) => [...prev.slice(-199), packet.logLine as string]);
         }
       },
-      (status: WebSocketStatus) => {
-        setWsStatus(status);
+      (nextStatus: WebSocketStatus) => {
+        setWsStatus(nextStatus);
       }
     );
-
     return () => {
       wsManager.disconnect();
     };
-  }, [taskId, navigate, setLatestTelemetry, setWsStatus]);
+  }, [taskId, setLatestTelemetry, setWsStatus]);
 
-  const progressPct = Math.round(latestTelemetry?.progressPct ?? (wsStatus === 'CONNECTED' ? 5 : 0));
-  const currentStage = latestTelemetry?.currentStage || (wsStatus === 'CONNECTED' ? 'Neural Redaction' : 'Connecting Telemetry...');
-  const isCompleted = latestTelemetry?.status === 'COMPLETED' || progressPct >= 100;
+  if (!taskId) {
+    return (
+      <AppLayout title="Processing Stream">
+        <div className="max-w-container-max mx-auto w-full p-xl glass-panel border border-error/30 rounded-2xl text-error">
+          No task identifier was provided. Return to the upload page to start a task.
+        </div>
+      </AppLayout>
+    );
+  }
 
-  const metrics: ProcessingMetrics = {
-    fps: latestTelemetry?.fps ?? 0,
-    elapsedSeconds: latestTelemetry?.elapsedTime ?? 0,
-    remainingSeconds: latestTelemetry?.estimatedRemainingTime ?? 0,
-    throughputFrames: latestTelemetry?.frameIndex ?? 0,
-    totalFrames: latestTelemetry?.totalFrames ?? 0,
-    processedFrames: latestTelemetry?.frameIndex ?? 0,
+  const progressPct = activeTask?.progressPct ?? null;
+  const progressLabel = progressPct === null ? '—' : `${Math.round(progressPct)}%`;
+  const progressWidth = progressPct === null ? 0 : Math.min(100, Math.max(0, progressPct));
+
+  const currentStage =
+    latestTelemetry?.currentStage ||
+    (status === 'PROCESSING'
+      ? 'Detection + Redaction'
+      : TERMINAL_STATUSES.includes(status || '')
+        ? status || 'Stopped'
+        : 'Awaiting status');
+
+  const metrics: ProcessingMetrics = activeTask?.metrics || EMPTY_METRICS;
+  const activeTaskFilename = activeTask?.filename || `Task_${taskId}.mp4`;
+  const detectedObjects = latestTelemetry?.detectedObjects || [];
+  const errorText = activeTask?.failureReason || statusError;
+
+  const stageStatus = (stage: string) => {
+    if (isFailed) return { icon: 'cancel', label: 'Halted', tone: 'text-error' };
+    if (isVerifiedComplete) return { icon: 'check_circle', label: 'Done', tone: 'text-primary' };
+    if (stage === currentStage) return { icon: 'progress_activity', label: 'Active', tone: 'text-primary' };
+    return { icon: 'radio_button_unchecked', label: 'Queued', tone: 'text-on-surface-variant' };
   };
 
-  const activeTaskFilename = `Task_${taskId}.mp4`;
-  const detectedObjects = latestTelemetry?.detectedObjects || [];
+  const handleCancel = async () => {
+    if (isCancelling) return;
+    setIsCancelling(true);
+    try {
+      const task = await api.cancelTask(taskId);
+      setActiveTask(task);
+      wsManager.disconnect();
+    } catch (err: any) {
+      setStatusError(err?.message || 'Cancellation request failed.');
+    } finally {
+      setIsCancelling(false);
+    }
+  };
 
   return (
     <AppLayout
       title="Processing Stream"
       activeTaskName={activeTaskFilename}
-      isProcessing={!isCompleted}
-      onCancelProcess={() => {
-        wsManager.disconnect();
-        navigate('/upload');
-      }}
+      isProcessing={isProcessing}
+      onCancelProcess={handleCancel}
     >
       <div className="max-w-container-max mx-auto w-full flex flex-col gap-xl">
-        {/* WebSocket Status Banner if reconnecting */}
-        {wsStatus !== 'CONNECTED' && (
-          <div className="p-sm bg-tertiary/10 border border-tertiary/30 rounded-lg text-tertiary text-xs flex items-center gap-sm">
-            <span className="material-symbols-outlined text-[16px] animate-spin">sync</span>
-            <span>WebSocket Telemetry: {wsStatus}. Connecting to CUDA processing node...</span>
+        {errorText && (
+          <div className="p-md bg-error/10 border border-error/30 rounded-xl text-error flex items-start gap-sm text-sm">
+            <span className="material-symbols-outlined text-[18px]">error</span>
+            <div className="flex flex-col">
+              <span className="font-label-md">
+                {isFailed ? 'Processing did not complete' : 'Status unavailable'}
+              </span>
+              <span className="font-body-md">{errorText}</span>
+            </div>
           </div>
         )}
 
-        {/* 12-Column Grid Stage */}
+        {isCancelling && (
+          <div className="p-sm bg-tertiary/10 border border-tertiary/30 rounded-lg text-tertiary text-xs">
+            Cancellation requested. The worker stops between frames and deletes any partial output.
+          </div>
+        )}
+
+        {wsStatus !== 'CONNECTED' && isProcessing && (
+          <div className="p-sm bg-tertiary/10 border border-tertiary/30 rounded-lg text-tertiary text-xs flex items-center gap-sm">
+            <span className="material-symbols-outlined text-[16px] animate-spin">sync</span>
+            <span>
+              WebSocket telemetry: {wsStatus}. Task status is still polled from the backend.
+            </span>
+          </div>
+        )}
+
         <div className="grid grid-cols-12 gap-xl flex-grow">
-          {/* Left Column: Dual Stream & Metrics */}
           <div className="col-span-12 lg:col-span-8 flex flex-col gap-lg">
             <DualStreamViewer
               detectedEntities={detectedObjects}
-              cameraName={`Task Stream #${taskId.substring(0, 8)}`}
-              isRedacting={!isCompleted}
+              cameraName={`Task #${taskId.substring(0, 10)}`}
+              isRedacting={isProcessing}
+              statusLabel={isVerifiedComplete ? 'Verified' : status || 'Processing'}
             />
 
-            <MetricsBar
-              metrics={metrics}
-              detectedCount={detectedObjects.length || (latestTelemetry?.activeDetections ?? 0)}
-            />
+            <MetricsBar metrics={metrics} detectedCount={metrics.masksTotal} />
 
-            {/* Log Telemetry Console */}
             <TelemetryConsole logs={logs} autoScroll />
           </div>
 
-          {/* Right Column: Status & Progress */}
           <div className="col-span-12 lg:col-span-4 flex flex-col gap-lg">
-            {/* Main Progress Card */}
             <div className="glass-panel border border-outline-variant rounded-2xl p-lg flex flex-col gap-lg shadow-xl">
               <div className="flex flex-col gap-sm">
                 <div className="flex justify-between items-end">
                   <h2 className="font-label-md font-bold text-on-surface">Overall Progress</h2>
                   <span className="text-headline-lg font-display font-bold text-primary leading-none">
-                    {progressPct}%
+                    {progressLabel}
                   </span>
                 </div>
                 <div className="h-3 w-full bg-surface-container-highest rounded-full overflow-hidden border border-outline-variant relative">
                   <div
                     className="h-full bg-primary progress-shimmer rounded-full shadow-glow transition-all duration-300"
-                    style={{ width: `${progressPct}%` }}
+                    style={{ width: `${progressWidth}%` }}
                   ></div>
                 </div>
+                <span className="font-label-sm text-on-surface-variant">
+                  {metrics.processedFrames > 0 && metrics.totalFrames > 0
+                    ? `${metrics.processedFrames} of ${metrics.totalFrames} frames processed`
+                    : 'Exact progress has not been reported yet.'}
+                  {metrics.elapsedSeconds > 0 ? ` • ${metrics.elapsedSeconds}s elapsed` : ''}
+                </span>
               </div>
 
               <div className="flex flex-col gap-md">
@@ -129,62 +235,74 @@ export const ProcessingPage: React.FC = () => {
                   Pipeline Status
                 </h3>
 
-                {/* Pipeline List Items */}
                 <div className="flex flex-col gap-sm">
-                  <div className="flex items-center gap-md p-sm bg-primary/5 rounded-lg border border-primary/20">
-                    <span className="material-symbols-outlined text-primary text-body-md">
-                      check_circle
-                    </span>
-                    <span className="font-label-md text-on-surface">Target Detection</span>
-                    <span className="ml-auto font-label-sm text-primary">Active</span>
-                  </div>
-
-                  <div className="flex items-center gap-md p-sm bg-surface-container-highest rounded-lg border border-primary/50 animate-pulse">
-                    <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
-                    <span className="font-label-md text-on-surface font-bold">
-                      {currentStage}
-                    </span>
-                    <span className="ml-auto font-label-sm text-primary">Live</span>
-                  </div>
-
-                  <div className="flex items-center gap-md p-sm opacity-50">
-                    <span className="material-symbols-outlined text-on-surface-variant text-body-md">
-                      tune
-                    </span>
-                    <span className="font-label-md text-on-surface">Gaussian Blur Masking</span>
-                    <span className="ml-auto font-label-sm">Active</span>
-                  </div>
+                  {['Detection', 'Tracking', currentStage].map((stage, index) => {
+                    const state = stageStatus(stage);
+                    const isCurrent = !isFailed && stage === currentStage;
+                    return (
+                      <div
+                        key={`${stage}-${index}`}
+                        className={`flex items-center gap-md p-sm rounded-lg border ${
+                          isFailed
+                            ? 'bg-error/5 border-error/30'
+                            : isCurrent
+                              ? 'bg-surface-container-highest border-primary/50'
+                              : 'bg-surface-container-low border-outline-variant'
+                        }`}
+                      >
+                        <span className={`material-symbols-outlined text-body-md ${state.tone}`}>
+                          {state.icon}
+                        </span>
+                        <span className={`font-label-md text-on-surface ${isCurrent ? 'font-bold' : ''}`}>
+                          {stage}
+                        </span>
+                        <span className={`ml-auto font-label-sm ${state.tone}`}>{state.label}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
-              {/* Detections Stream Summary */}
-              <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md">
+              <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md flex flex-col gap-xs">
                 <h4 className="font-label-sm text-on-surface-variant mb-sm flex items-center gap-sm">
                   <span className="material-symbols-outlined text-xs">list</span>
-                  LIVE DETECTED ENTITIES
+                  TASK DETAILS
                 </h4>
-                {detectedObjects.length > 0 ? (
-                  <div className="flex flex-wrap gap-xs">
-                    {detectedObjects.map((obj, i) => (
-                      <span
-                        key={i}
-                        className="bg-primary/10 text-primary border border-primary/20 rounded px-sm py-[2px] font-label-sm"
-                      >
-                        {obj.label || `Entity #${i + 1}`}
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="font-label-sm text-on-surface-variant opacity-70 italic">
-                    Scanning frames for face, license plate, and screen targets...
-                  </p>
-                )}
+                <div className="flex justify-between text-xs font-label-sm">
+                  <span className="text-on-surface-variant">Blur style</span>
+                  <span className="text-on-surface capitalize">{activeTask?.blurStyle || '—'}</span>
+                </div>
+                <div className="flex justify-between text-xs font-label-sm">
+                  <span className="text-on-surface-variant">Intensity</span>
+                  <span className="text-on-surface">
+                    {activeTask?.blurIntensity ? `${activeTask.blurIntensity}%` : '—'}
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs font-label-sm">
+                  <span className="text-on-surface-variant">Face regions masked</span>
+                  <span className="text-on-surface">{metrics.masksTotal.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between text-xs font-label-sm">
+                  <span className="text-on-surface-variant">Debug frames</span>
+                  <span className="text-on-surface">
+                    {activeTask?.debugMode ? metrics.debugFramesSaved : 'off'}
+                  </span>
+                </div>
               </div>
+
+              {isFailed && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/upload')}
+                  className="w-full py-sm rounded-lg border border-outline-variant font-label-md hover:bg-surface-variant transition-colors cursor-pointer"
+                >
+                  Back to Upload
+                </button>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Footer */}
         <footer className="mt-auto border-t border-outline-variant py-md flex flex-col md:flex-row justify-between items-center text-label-sm">
           <span className="font-label-sm text-on-surface-variant opacity-70">
             SafeFrame AI Vision Stream • Task #{taskId}

@@ -65,10 +65,15 @@ export const BlurConfigPanel: React.FC<BlurConfigPanelProps> = ({
           type="range"
           min="10"
           max="100"
+          step="5"
           value={blurIntensity}
           onChange={(e) => onIntensityChange(Number(e.target.value))}
           className="w-full accent-primary bg-surface-container-high h-2 rounded-lg cursor-pointer"
         />
+        <p className="text-[11px] text-on-surface-variant">
+          Every setting keeps a measured privacy floor: the mask is strong enough that the face is
+          no longer detected on the protected frame. Higher values increase the destruction of detail.
+        </p>
       </div>
     </div>
   );

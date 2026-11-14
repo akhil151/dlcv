@@ -1,10 +1,16 @@
 import React from 'react';
 
+export interface EngineStatusSummary {
+  label: string;
+  ready: boolean;
+}
+
 export interface TopAppBarProps {
   title?: string;
   activeTaskName?: string;
   isProcessing?: boolean;
   onCancelProcess?: () => void;
+  engine?: EngineStatusSummary | null;
 }
 
 export const TopAppBar: React.FC<TopAppBarProps> = ({
@@ -12,10 +18,10 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({
   activeTaskName,
   isProcessing = false,
   onCancelProcess,
+  engine = null,
 }) => {
   return (
     <header className="sticky top-0 w-full z-40 flex justify-between items-center px-xl h-16 bg-surface/80 backdrop-blur-md border-b border-outline-variant select-none">
-      {/* Title / Active Task Display */}
       <div className="flex items-center gap-md">
         {activeTaskName ? (
           <div className="flex items-center gap-md">
@@ -25,7 +31,7 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({
             </span>
             {isProcessing && (
               <span className="bg-primary/10 text-primary px-sm py-[2px] rounded text-[10px] font-bold uppercase border border-primary/20 animate-pulse">
-                REDACTING LIVE
+                PROCESSING
               </span>
             )}
           </div>
@@ -36,7 +42,6 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({
         )}
       </div>
 
-      {/* System & AI Status Indicators */}
       <div className="flex items-center gap-md">
         {isProcessing && onCancelProcess ? (
           <button
@@ -50,12 +55,10 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({
         ) : (
           <div className="flex items-center gap-sm">
             <div className="hidden sm:flex items-center gap-xs bg-surface-container-high border border-outline-variant px-sm py-xs rounded-full text-xs font-mono text-on-surface-variant">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span>YOLOv11 CUDA Engine</span>
-            </div>
-            <div className="flex items-center gap-xs bg-primary/10 border border-primary/20 px-sm py-xs rounded-full text-xs font-label-sm text-primary">
-              <span className="material-symbols-outlined text-[14px]">memory</span>
-              <span>GPU Active</span>
+              <span
+                className={`w-2 h-2 rounded-full ${engine?.ready ? 'bg-emerald-400' : 'bg-tertiary'}`}
+              ></span>
+              <span>{engine?.label || 'Engine status unknown'}</span>
             </div>
           </div>
         )}

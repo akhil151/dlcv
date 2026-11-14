@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from backend.core.logging import logger
 
 class SafeFrameException(Exception):
-    def __init__(self, message: str, status_code: int = status.HTTP-400-BAD-REQUEST):
+    def __init__(self, message: str, status_code: int = status.HTTP_400_BAD_REQUEST):
         self.message = message
         self.status_code = status_code
         super().__init__(self.message)
@@ -28,6 +28,18 @@ class FileUploadException(SafeFrameException):
             message=f"File upload failed: {detail}",
             status_code=status.HTTP_400_BAD_REQUEST
         )
+
+class DetectorUnavailableException(SafeFrameException):
+    def __init__(self, detail: str):
+        super().__init__(message=f"Privacy detector unavailable: {detail}", status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+class DetectorInferenceException(SafeFrameException):
+    def __init__(self, detail: str):
+        super().__init__(message=f"Privacy detector inference failed: {detail}", status_code=status.HTTP_502_BAD_GATEWAY)
+
+class FFmpegUnavailableException(SafeFrameException):
+    def __init__(self, detail: str):
+        super().__init__(message=f"Video encoder unavailable: {detail}", status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 async def safeframe_exception_handler(request: Request, exc: SafeFrameException):
     logger.warning(f"Domain Exception [{exc.status_code}] on {request.url.path}: {exc.message}")
