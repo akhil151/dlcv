@@ -1,0 +1,62 @@
+{
+  "total_images": 5,
+  "total_annotations": 5,
+  "images_with_detection": 3,
+  "detection_rate_pct": 60.0,
+  "images_with_fallback": 1,
+  "images_with_quad_refinement": 2,
+  "fallback_rate_pct": 33.3,
+  "median_quad_iou": 0.625,
+  "mean_quad_iou": 0.577,
+  "median_coverage_pct": 74.3,
+  "mean_coverage_pct": 70.4,
+  "per_image": [
+    {
+      "key": "phone_display",
+      "filename": "phone_display.jpg",
+      "detections": 0,
+      "quad_iou": null,
+      "fallback": null
+    },
+    {
+      "key": "phone_hand",
+      "filename": "phone_hand.jpg",
+      "license": "CC0",
+      "detections": 1,
+      "region_kind": "screen_quad",
+      "quad_iou": 0.7954998605328678,
+      "fallback": false,
+      "coverage_pct": 97.5,
+      "detected_confidence": 0.496
+    },
+    {
+      "key": "phone_people",
+      "filename": "phone_people.jpg",
+      "license": "CC0",
+      "detections": 2,
+      "region_kind": "phone_fallback",
+      "quad_iou": 0.6249058025621703,
+      "fallback": true,
+      "coverage_pct": 74.26,
+      "detected_confidence": 0.484
+    },
+    {
+      "key": "phone_bokeh",
+      "filename": "phone_bokeh.jpg",
+      "detections": 0,
+      "quad_iou": null,
+      "fallback": null
+    },
+    {
+      "key": "phone_use",
+      "filename": "phone_use.jpg",
+      "license": "CC0",
+      "detections": 1,
+      "region_kind": "screen_quad",
+      "quad_iou": 0.3103526567790102,
+      "fallback": false,
+      "coverage_pct": 39.54,
+      "detected_confidence": 0.669
+    }
+  ]
+}

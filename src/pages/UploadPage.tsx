@@ -73,6 +73,27 @@ export const UploadPage: React.FC = () => {
     }
     if (!videoMetadata) return 'Upload a video to enable processing.';
     if (supportedSelection.length === 0) return 'Select at least one supported target.';
+    if (
+      supportedSelection.some((category) => category === 'id_cards' || category === 'passports') &&
+      readiness &&
+      !readiness.documentsReady
+    ) {
+      return 'Identity-document detector weights are not installed on the server.';
+    }
+    if (
+      supportedSelection.includes('laptop_screens') &&
+      readiness &&
+      !readiness.laptopScreensReady
+    ) {
+      return 'Laptop-screen detector weights are not installed on the server.';
+    }
+    if (
+      supportedSelection.includes('phone_screens') &&
+      readiness &&
+      !readiness.phoneScreensReady
+    ) {
+      return 'Phone-screen detector weights are not installed on the server.';
+    }
     return null;
   })();
 
@@ -112,7 +133,9 @@ export const UploadPage: React.FC = () => {
       return;
     }
     if (supportedSelection.length === 0) {
-      setErrorMessage('Select at least one supported redaction target (faces).');
+      setErrorMessage(
+        'Select at least one supported redaction target (faces, license plates, ID cards, passports, laptop screens or phone screens).'
+      );
       return;
     }
 
@@ -154,9 +177,12 @@ export const UploadPage: React.FC = () => {
     ? 'Backend unreachable'
     : readiness
       ? readiness.processingReady
-        ? `Engine ready — ${readiness.detector.name} (${readiness.detector.device.toUpperCase()}) + FFmpeg ${
-            readiness.ffmpeg.version || ''
-          }`
+        ? `Engine ready — ${readiness.detector.name} (${readiness.detector.device.toUpperCase()})` +
+          `${readiness.licensePlatesReady ? ' + RT-DETR plates' : ' · plates unavailable'}` +
+          `${readiness.documentsReady ? ' + DocAligner documents' : ' · documents unavailable'}` +
+          `${readiness.laptopScreensReady ? ' + RT-DETR laptop screens' : ' · laptop screens unavailable'}` +
+          `${readiness.phoneScreensReady ? ' + RT-DETR phone screens' : ' · phone screens unavailable'}` +
+          ` + FFmpeg ${readiness.ffmpeg.version || ''}`
         : `Engine unavailable — ${readiness.reasons.join('; ')}`
       : 'Checking backend readiness…';
 
@@ -219,6 +245,10 @@ export const UploadPage: React.FC = () => {
             <RedactionTargetPicker
               selectedCategories={selectedCategories}
               onToggleCategory={toggleCategory}
+              licensePlatesAvailable={readiness?.licensePlatesReady ?? true}
+              documentsAvailable={readiness?.documentsReady ?? true}
+              laptopScreensAvailable={readiness?.laptopScreensReady ?? true}
+              phoneScreensAvailable={readiness?.phoneScreensReady ?? true}
             />
 
             <BlurConfigPanel
@@ -246,7 +276,7 @@ export const UploadPage: React.FC = () => {
         <footer className="mt-auto w-full py-md flex flex-col md:flex-row justify-between items-center border-t border-outline-variant text-label-sm">
           <div className="flex items-center gap-xs text-on-surface-variant opacity-70">
             <span className="material-symbols-outlined text-[16px]">verified_user</span>
-            <span>SafeFrame AI — YuNet face redaction • H.264 output</span>
+            <span>SafeFrame AI — YuNet faces + RT-DETR plates + DocAligner documents + RT-DETR laptop &amp; phone screens • H.264 output</span>
           </div>
           <p className="font-label-sm text-on-surface-variant opacity-60 mt-xs md:mt-0">
             © 2024 SafeFrame AI. Technical Authority in Video Privacy.

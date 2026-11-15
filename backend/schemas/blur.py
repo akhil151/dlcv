@@ -26,6 +26,11 @@ class BlurROIPlan(BaseModel):
     core_y1: Optional[int] = Field(default=None, ge=0)
     core_x2: Optional[int] = Field(default=None, ge=0)
     core_y2: Optional[int] = Field(default=None, ge=0)
+    # Four-corner polygon in frame pixels (laptop screens). When present the
+    # mask is this polygon grown outward by ``pad`` pixels, not a rectangle.
+    quad: Optional[List[List[float]]] = Field(default=None)
+    region_kind: str = Field(default="box")
+    pad: int = Field(default=0, ge=0)
 
 class BlurFrameResult(BaseModel):
     """

@@ -74,8 +74,11 @@ class Phase7APrivacyTests(unittest.TestCase):
             service.detect_entities(np.zeros((10, 10, 3), dtype=np.uint8), ["faces"])
 
     def test_unsupported_targets_are_rejected(self):
+        # Unvalidated categories must still be refused. Phone screens and laptop
+        # screens are validated in Phases 4 & 5.
         with self.assertRaises(DetectorUnavailableException):
-            DetectionService().validate_available(["license_plates"])
+            DetectionService().validate_available(["smartwatches"])
+        DetectionService().validate_available(["faces", "license_plates", "laptop_screens", "phone_screens"])
 
     def test_tracker_instances_do_not_share_state(self):
         one, two = TrackingService(), TrackingService()

@@ -2,14 +2,28 @@ export type RedactionCategory =
   | 'faces'
   | 'license_plates'
   | 'id_cards'
+  | 'passports'
   | 'laptop_screens'
   | 'phone_screens';
 
 /**
- * Face redaction is the only validated capability. The other categories are
- * shown in the UI as "Coming Later" and are never sent to the backend.
+ * Face, license-plate, identity-document, laptop-screen and phone-screen
+ * redaction are the validated capabilities.
+ *
+ * ID cards and passports share one validated, class-agnostic document
+ * detector, so both are operational but are not type-separated. Laptop and
+ * phone screens use a COCO device detector plus a display-quad refinement
+ * stage; when the boundary cannot be separated the backend masks the whole
+ * device box and says so in the summary.
  */
-export const SUPPORTED_CATEGORIES: RedactionCategory[] = ['faces'];
+export const SUPPORTED_CATEGORIES: RedactionCategory[] = [
+  'faces',
+  'license_plates',
+  'id_cards',
+  'passports',
+  'laptop_screens',
+  'phone_screens',
+];
 
 /** Client-side pre-check only; the backend validates the actual container. */
 export const ACCEPTED_VIDEO_EXTENSIONS = ['.mp4', '.avi', '.mov', '.mkv', '.webm'];
@@ -65,6 +79,30 @@ export interface RedactionSummary {
   taskId: string;
   /** Face regions masked across all frames (region-frames). */
   facesBlurred: number;
+  /** License-plate regions masked across all frames (region-frames). */
+  licensePlatesRedacted: number;
+  /** Document regions masked across all frames (ID cards + passports). */
+  documentsRedacted: number;
+  /** Laptop-screen regions masked across all frames (region-frames). */
+  laptopScreensRedacted: number;
+  /** Screen regions masked with a refined display quadrilateral. */
+  laptopScreenQuadRegions: number;
+  /** Screen regions that fell back to masking the whole device box. */
+  laptopScreenFallbackRegions: number;
+  /** Share of laptop-screen regions that used a refined display quad (0-100). */
+  laptopScreenQuadPct: number;
+  /** 'refined_quad' | 'device_box_fallback' | 'mixed' | 'not_applicable'. */
+  laptopScreenBoundary: string;
+  /** Phone-screen regions masked across all frames (region-frames). */
+  phoneScreensRedacted: number;
+  /** Phone-screen regions masked with a refined display quadrilateral. */
+  phoneScreenQuadRegions: number;
+  /** Phone-screen regions that fell back to masking the whole device box. */
+  phoneScreenFallbackRegions: number;
+  /** Share of phone-screen regions that used a refined display quad (0-100). */
+  phoneScreenQuadPct: number;
+  /** 'refined_quad' | 'device_box_fallback' | 'mixed' | 'not_applicable'. */
+  phoneScreenBoundary: string;
   totalObjectsCount: number;
   processingTimeSeconds: number;
   framesProcessed: number;
@@ -145,6 +183,34 @@ export interface ReadinessSnapshot {
     status: string;
     device: string;
   };
+  plateDetector?: {
+    name: string;
+    available: boolean;
+    status: string;
+    device: string;
+  };
+  licensePlatesReady?: boolean;
+  documentDetector?: {
+    name: string;
+    available: boolean;
+    status: string;
+    device: string;
+  };
+  documentsReady?: boolean;
+  laptopDetector?: {
+    name: string;
+    available: boolean;
+    status: string;
+    device: string;
+  };
+  laptopScreensReady?: boolean;
+  phoneDetector?: {
+    name: string;
+    available: boolean;
+    status: string;
+    device: string;
+  };
+  phoneScreensReady?: boolean;
   ffmpeg: {
     available: boolean;
     version?: string | null;

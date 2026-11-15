@@ -4,6 +4,7 @@ import time
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from backend.config.ai_settings import ai_settings
+from backend.schemas.detection import TargetCategory
 from backend.schemas.tracking import TrackedObjectItem, TrackStateEnum
 from backend.schemas.ghost_box import GhostBoxItem
 from backend.schemas.blur import BlurModeEnum, BlurROIPlan, BlurFrameResult
@@ -15,15 +16,17 @@ class BlurService:
 
     Responsibilities:
     - Merges active tracked entities and predictive Ghost Boxes into a unified ROI execution plan.
-    - Builds each mask from the detected face box: proportional padding plus a
-      rounded (superellipse) silhouette, never a fixed-size rectangle.
+    - Builds each mask from the detected target box with proportional padding.
+      Faces get a rounded (superellipse) silhouette; license plates get a full
+      rectangular mask matching their own geometry.
     - Applies Gaussian Blur, Pixelation, Blackout, or Feathered Blur strictly inside ROI slices in-place.
     - Safely clips bounding box coordinates to image boundaries [0, width] and [0, height].
     - Handles overlapping, nested, or out-of-bounds regions seamlessly.
 
     Privacy contract: whatever the mask looks like, every pixel of the detected
-    face box itself is fully filtered. The rounded edge and its soft ramp only
-    live in the padding ring around the face, so appearance never costs coverage.
+    target box itself is fully filtered. A face's rounded edge and soft ramp
+    only live in the padding ring; a plate's rectangle covers the padded ROI
+    with no soft rim, so no character can survive at the edges.
     """
 
     def __init__(self) -> None:
@@ -34,16 +37,48 @@ class BlurService:
         self.gaussian_max_kernel = ai_settings.GAUSSIAN_MAX_KERNEL
         self.pixelate_max_blocks = ai_settings.PIXELATE_MAX_BLOCKS
         self.pixelate_min_block = ai_settings.PIXELATE_MIN_BLOCK_PX
+        self.plate_pixelate_max_blocks = ai_settings.PLATE_PIXELATE_MAX_BLOCKS
         self.padding_x_ratio = ai_settings.BLUR_PADDING_X_RATIO
         self.padding_y_ratio = ai_settings.BLUR_PADDING_Y_RATIO
         self.min_padding = ai_settings.BLUR_MIN_PADDING_PX
         self.max_padding = ai_settings.BLUR_MAX_PADDING_PX
+        # Plates are wide and short; their padding is tuned separately so the
+        # mask covers characters at the top/bottom edge without swallowing the
+        # surrounding vehicle body.
+        self.plate_padding_x_ratio = ai_settings.PLATE_PADDING_X_RATIO
+        self.plate_padding_y_ratio = ai_settings.PLATE_PADDING_Y_RATIO
+        self.plate_min_padding = ai_settings.PLATE_MIN_PADDING_PX
+        self.plate_max_padding = ai_settings.PLATE_MAX_PADDING_PX
+        self.plate_hold_frames = ai_settings.PLATE_REDACTION_HOLD_FRAMES
+        # Documents use their own padding/hold/pixelation settings: they are
+        # text-dense and the mask must cover the whole card/passport including
+        # the machine-readable zone.
+        self.document_padding_x_ratio = ai_settings.DOCUMENT_PADDING_X_RATIO
+        self.document_padding_y_ratio = ai_settings.DOCUMENT_PADDING_Y_RATIO
+        self.document_min_padding = ai_settings.DOCUMENT_MIN_PADDING_PX
+        self.document_max_padding = ai_settings.DOCUMENT_MAX_PADDING_PX
+        self.document_hold_frames = ai_settings.DOCUMENT_REDACTION_HOLD_FRAMES
+        self.document_pixelate_max_blocks = ai_settings.DOCUMENT_PIXELATE_MAX_BLOCKS
+        # Laptop-screen masks are polygons, not rectangles: the display is a
+        # perspective quadrilateral. Padding grows the polygon outward only.
+        self.laptop_padding_ratio = ai_settings.LAPTOP_PADDING_RATIO
+        self.laptop_min_padding = ai_settings.LAPTOP_MIN_PADDING_PX
+        self.laptop_max_padding = ai_settings.LAPTOP_MAX_PADDING_PX
+        self.laptop_hold_frames = ai_settings.LAPTOP_REDACTION_HOLD_FRAMES
+        self.laptop_pixelate_max_blocks = ai_settings.LAPTOP_PIXELATE_MAX_BLOCKS
+        # Phone-screen masks are polygons: the display is a quadrilateral.
+        # Padding grows the polygon outward only.
+        self.phone_padding_ratio = ai_settings.PHONE_PADDING_RATIO
+        self.phone_min_padding = ai_settings.PHONE_MIN_PADDING_PX
+        self.phone_max_padding = ai_settings.PHONE_MAX_PADDING_PX
+        self.phone_hold_frames = ai_settings.PHONE_REDACTION_HOLD_FRAMES
+        self.phone_pixelate_max_blocks = ai_settings.PHONE_PIXELATE_MAX_BLOCKS
         self.superellipse_exponent = max(2.0, ai_settings.MASK_SUPERELLIPSE_EXPONENT)
         self.solid_margin_ratio = max(0.0, min(1.0, ai_settings.MASK_SOLID_MARGIN_RATIO))
         self.hold_frames = ai_settings.REDACTION_HOLD_FRAMES
         # Mask shape depends only on (ROI size, core inset, softness) and frame
         # geometry is constant per task, so the alpha mask is reused per shape.
-        self._alpha_cache: Dict[Tuple[int, ...], np.ndarray] = {}
+        self._alpha_cache: Dict[Tuple[Any, ...], np.ndarray] = {}
 
     def render_blur(
         self,
@@ -110,11 +145,17 @@ class BlurService:
         ghost_regions_count = 0
         held_tracks_count = 0
         hold_limit = self.hold_frames if hold_frames is None else int(hold_frames)
+        plate_hold_limit = self.plate_hold_frames if hold_frames is None else int(hold_frames)
+        document_hold_limit = self.document_hold_frames if hold_frames is None else int(hold_frames)
+        laptop_hold_limit = self.laptop_hold_frames if hold_frames is None else int(hold_frames)
+        phone_hold_limit = self.phone_hold_frames if hold_frames is None else int(hold_frames)
 
-        def add_plan(bbox: Any, category: Any, is_ghost: bool) -> bool:
+        def add_plan(bbox: Any, category: Any, is_ghost: bool,
+                     quad: Any = None, region_kind: str = "box") -> bool:
             """Adds a plan, or folds it into an equivalent existing region."""
             plan = self._convert_normalized_bbox_to_roi(
-                bbox, frame_width, frame_height, category, is_ghost=is_ghost)
+                bbox, frame_width, frame_height, category, is_ghost=is_ghost,
+                quad=quad, region_kind=region_kind)
             if plan is None:
                 return False
             for index, existing in enumerate(roi_plans):
@@ -127,14 +168,18 @@ class BlurService:
         # (1) Current-frame detections: masked immediately, including the first
         # frame a face appears. This is the primary redaction source.
         for detection in (detections or []):
-            if add_plan(detection.bbox, detection.category, is_ghost=False):
+            if add_plan(detection.bbox, detection.category, is_ghost=False,
+                        quad=getattr(detection, "quad", None),
+                        region_kind=getattr(detection, "region_kind", "box")):
                 active_tracks_count += 1
 
         # (2) Live tracks. Their box is a union of the smoothed trajectory and
         # the current detection, so folding it in can only grow the mask.
         for track in tracks:
             if track.track_state in (TrackStateEnum.NEW, TrackStateEnum.TRACKED):
-                if add_plan(track.bbox, track.category, is_ghost=False):
+                if add_plan(track.bbox, track.category, is_ghost=False,
+                            quad=getattr(track, "quad", None),
+                            region_kind=getattr(track, "region_kind", "box")):
                     active_tracks_count += 1
 
         # (3) Conservative hold for a confirmed face that was just missed. The
@@ -144,9 +189,21 @@ class BlurService:
             for track in tracks:
                 if track.track_state != TrackStateEnum.LOST or not track.is_confirmed:
                     continue
-                if track.frames_since_update > hold_limit:
+                if track.category == TargetCategory.LICENSE_PLATES:
+                    limit = plate_hold_limit
+                elif track.category in (TargetCategory.ID_CARDS, TargetCategory.PASSPORTS):
+                    limit = document_hold_limit
+                elif track.category == TargetCategory.LAPTOP_SCREENS:
+                    limit = laptop_hold_limit
+                elif track.category == TargetCategory.PHONE_SCREENS:
+                    limit = phone_hold_limit
+                else:
+                    limit = hold_limit
+                if track.frames_since_update > limit:
                     continue
-                if add_plan(track.bbox, track.category, is_ghost=False):
+                if add_plan(track.bbox, track.category, is_ghost=False,
+                            quad=getattr(track, "quad", None),
+                            region_kind=getattr(track, "region_kind", "box")):
                     held_tracks_count += 1
 
         # (4) Predictive ghost boxes (disabled by default; see ai_settings).
@@ -221,23 +278,49 @@ class BlurService:
         return intersection / smaller
 
     def _same_region(self, plan: BlurROIPlan, existing: BlurROIPlan) -> bool:
-        """True when two sources refer to effectively the same face region.
+        """True when two sources refer to effectively the same target region.
 
         A region is merged when at least 80% of the smaller of the two is
         already covered. This prevents a detection and its own track (or a stale
-        held box) from filtering the same pixels twice.
+        held box) from filtering the same pixels twice. Different categories are
+        never merged: a face and a plate need different mask geometry.
         """
+        if plan.category != existing.category:
+            return False
         return self._core_overlap_ratio(plan, existing) >= 0.80
 
     @staticmethod
     def _merge_plans(existing: BlurROIPlan, plan: BlurROIPlan) -> BlurROIPlan:
-        """Union of two plans describing the same face.
+        """Union of two plans describing the same target.
 
         Taking the union guarantees that a smoothed/held box can never cut a
-        corner off the current detection.
+        corner off the current detection. Polygon plans (laptop screens) are
+        merged as the convex hull of both regions, which still contains every
+        pixel either source had to cover.
         """
         ex1, ey1, ex2, ey2 = BlurService._core(existing)
         px1, py1, px2, py2 = BlurService._core(plan)
+        merged_quad = None
+        region_kind = existing.region_kind
+        if existing.quad or plan.quad:
+            polygons = []
+            for item in (existing, plan):
+                if item.quad:
+                    polygons.append(np.asarray(item.quad, dtype=np.float32).reshape(-1, 2))
+                else:
+                    ix1, iy1, ix2, iy2 = BlurService._core(item)
+                    polygons.append(np.array([[ix1, iy1], [ix2, iy1],
+                                              [ix2, iy2], [ix1, iy2]], dtype=np.float32))
+            hull = cv2.convexHull(np.concatenate(polygons, axis=0)).reshape(-1, 2)
+            merged_quad = [[float(x), float(y)] for x, y in hull]
+            if existing.region_kind != plan.region_kind:
+                # One of the two sources could not separate the display: the
+                # merged region is a device-box fallback, and says so. The
+                # fallback kind is category-specific so a phone region is never
+                # reported as a laptop fallback.
+                region_kind = ("phone_fallback"
+                               if existing.category == TargetCategory.PHONE_SCREENS
+                               else "laptop_fallback")
         return BlurROIPlan(
             x1=min(existing.x1, plan.x1), y1=min(existing.y1, plan.y1),
             x2=max(existing.x2, plan.x2), y2=max(existing.y2, plan.y2),
@@ -245,14 +328,33 @@ class BlurService:
             is_ghost=existing.is_ghost and plan.is_ghost,
             core_x1=min(ex1, px1), core_y1=min(ey1, py1),
             core_x2=max(ex2, px2), core_y2=max(ey2, py2),
+            quad=merged_quad, region_kind=region_kind,
+            pad=max(existing.pad, plan.pad),
         )
 
-    def _padding(self, core_w: int, core_h: int) -> Tuple[int, int]:
-        """Padding proportional to the face's own width and height."""
-        pad_x = int(round(core_w * self.padding_x_ratio))
-        pad_y = int(round(core_h * self.padding_y_ratio))
-        pad_x = max(self.min_padding, min(self.max_padding, pad_x))
-        pad_y = max(self.min_padding, min(self.max_padding, pad_y))
+    def _padding(self, core_w: int, core_h: int, is_plate: bool = False,
+                 is_document: bool = False, is_laptop: bool = False,
+                 is_phone: bool = False) -> Tuple[int, int]:
+        """Padding proportional to the target's own width and height."""
+        if is_phone:
+            ratio_x = ratio_y = self.phone_padding_ratio
+            min_pad, max_pad = self.phone_min_padding, self.phone_max_padding
+        elif is_laptop:
+            ratio_x = ratio_y = self.laptop_padding_ratio
+            min_pad, max_pad = self.laptop_min_padding, self.laptop_max_padding
+        elif is_document:
+            ratio_x, ratio_y = self.document_padding_x_ratio, self.document_padding_y_ratio
+            min_pad, max_pad = self.document_min_padding, self.document_max_padding
+        elif is_plate:
+            ratio_x, ratio_y = self.plate_padding_x_ratio, self.plate_padding_y_ratio
+            min_pad, max_pad = self.plate_min_padding, self.plate_max_padding
+        else:
+            ratio_x, ratio_y = self.padding_x_ratio, self.padding_y_ratio
+            min_pad, max_pad = self.min_padding, self.max_padding
+        pad_x = int(round(core_w * ratio_x))
+        pad_y = int(round(core_h * ratio_y))
+        pad_x = max(min_pad, min(max_pad, pad_x))
+        pad_y = max(min_pad, min(max_pad, pad_y))
         return pad_x, pad_y
 
     def _convert_normalized_bbox_to_roi(
@@ -261,21 +363,43 @@ class BlurService:
         width: int,
         height: int,
         category: Any,
-        is_ghost: bool
+        is_ghost: bool,
+        quad: Any = None,
+        region_kind: str = "box",
     ) -> Optional[BlurROIPlan]:
         """
         Converts normalized percentage coordinates to clipped integer pixel boundaries.
 
         The exact rectangle is rounded *outward* (floor the origin, ceil the far
         edge) so the ROI always contains the whole requested region, then expanded
-        by padding derived from the face's own width and height and clipped to
-        the frame.
+        by padding derived from the target's own width and height and clipped to
+        the frame. When ``quad`` is supplied the polygon is clipped to the frame
+        and the ROI is its bounding box plus padding; the mask itself stays a
+        polygon, so a perspective screen is not turned into a rectangle.
         """
-        # Exact floating-point pixel rectangle.
-        fx1 = (bbox.x / 100.0) * width
-        fy1 = (bbox.y / 100.0) * height
-        fx2 = ((bbox.x + bbox.width) / 100.0) * width
-        fy2 = ((bbox.y + bbox.height) / 100.0) * height
+        polygon: Optional[np.ndarray] = None
+        if quad:
+            try:
+                points = np.asarray(quad, dtype=np.float32).reshape(-1, 2)
+            except (TypeError, ValueError):
+                points = None
+            if points is not None and points.shape[0] >= 3:
+                points[:, 0] = np.clip(points[:, 0], 0.0, float(width - 1))
+                points[:, 1] = np.clip(points[:, 1], 0.0, float(height - 1))
+                if cv2.contourArea(points.astype(np.int32)) >= 4.0:
+                    polygon = points
+
+        if polygon is not None:
+            fx1 = float(polygon[:, 0].min())
+            fy1 = float(polygon[:, 1].min())
+            fx2 = float(polygon[:, 0].max())
+            fy2 = float(polygon[:, 1].max())
+        else:
+            # Exact floating-point pixel rectangle.
+            fx1 = (bbox.x / 100.0) * width
+            fy1 = (bbox.y / 100.0) * height
+            fx2 = ((bbox.x + bbox.width) / 100.0) * width
+            fy2 = ((bbox.y + bbox.height) / 100.0) * height
 
         # Round outward: never shrink below the requested region.
         core_x1 = math.floor(fx1)
@@ -285,7 +409,17 @@ class BlurService:
 
         core_w = max(1, core_x2 - core_x1)
         core_h = max(1, core_y2 - core_y1)
-        pad_x, pad_y = self._padding(core_w, core_h)
+        is_plate = category == TargetCategory.LICENSE_PLATES
+        is_document = category in (TargetCategory.ID_CARDS, TargetCategory.PASSPORTS)
+        is_laptop = category == TargetCategory.LAPTOP_SCREENS
+        is_phone = category == TargetCategory.PHONE_SCREENS
+        pad_x, pad_y = self._padding(core_w, core_h, is_plate=is_plate,
+                                     is_document=is_document, is_laptop=is_laptop,
+                                     is_phone=is_phone)
+        if polygon is not None:
+            # A polygon mask grows uniformly; separate x/y padding would make
+            # the dilated outline anisotropic.
+            pad_x = pad_y = max(pad_x, pad_y)
 
         # Clip padded bounds safely to image bounds [0, width] and [0, height].
         cx1 = max(0, min(width - 1, core_x1 - pad_x))
@@ -305,25 +439,66 @@ class BlurService:
         return BlurROIPlan(
             x1=cx1, y1=cy1, x2=cx2, y2=cy2, category=category, is_ghost=is_ghost,
             core_x1=ccx1, core_y1=ccy1, core_x2=ccx2, core_y2=ccy2,
+            quad=[[float(x), float(y)] for x, y in polygon] if polygon is not None else None,
+            region_kind=region_kind, pad=int(max(pad_x, pad_y)),
         )
 
     # -------------------------------------------------------------------- masks
 
     def _alpha_mask(self, plan: BlurROIPlan, soft: bool, power: float) -> np.ndarray:
-        """Alpha mask for one ROI: rounded face silhouette with a soft rim.
+        """Alpha mask for one ROI.
 
-        Shape: a superellipse (rounded rectangle) inscribed in the padded ROI.
+        Faces: a superellipse (rounded rectangle) inscribed in the padded ROI.
         At the configured padding ratios this silhouette contains the whole
         detected face rectangle, so the rounded outline does not shave off any
         part of the face. Blur/pixelation additionally fade from the face box
         edge outwards (`soft=True`); blackout uses the same outline with a hard,
         anti-aliased edge for a clean look.
 
+        License plates: a full rectangle matching the plate's own geometry. A
+        plate is a flat, high-contrast rectangle, and any soft or rounded rim
+        could leave a character fragment readable, so the entire padded ROI is
+        filtered at alpha 1.0.
+
         Returns a float32 array of shape (h, w) with values in [0, 1], and is
         cached because the shape only depends on the integers below.
         """
         w = plan.x2 - plan.x1
         h = plan.y2 - plan.y1
+
+        if plan.quad:
+            # Screen region: hard, full-opacity polygon grown outward by the
+            # configured padding. No soft rim, so no original pixel inside the
+            # display can survive at the edge.
+            points = np.round(np.asarray(plan.quad, dtype=np.float32)
+                              - np.array([plan.x1, plan.y1], dtype=np.float32)).astype(np.int32)
+            pad = int(max(0, plan.pad))
+            key = ("poly", w, h, pad, tuple(points.reshape(-1).tolist()))
+            cached = self._alpha_cache.get(key)
+            if cached is not None:
+                return cached
+            mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.fillPoly(mask, [points], 1)
+            if pad > 0:
+                kernel = cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (2 * pad + 1, 2 * pad + 1))
+                mask = cv2.dilate(mask, kernel)
+            alpha = mask.astype(np.float32)
+            if len(self._alpha_cache) >= 64:
+                self._alpha_cache.clear()
+            self._alpha_cache[key] = alpha
+            return alpha
+
+        if plan.category in (TargetCategory.LICENSE_PLATES, TargetCategory.ID_CARDS,
+                             TargetCategory.PASSPORTS):
+            key = ("rect", w, h)
+            cached = self._alpha_cache.get(key)
+            if cached is None:
+                cached = np.ones((h, w), dtype=np.float32)
+                if len(self._alpha_cache) >= 64:
+                    self._alpha_cache.clear()
+                self._alpha_cache[key] = cached
+            return cached
         cx1, cy1, cx2, cy2 = self._core(plan)
         ix1 = max(0, min(w, cx1 - plan.x1))
         iy1 = max(0, min(h, cy1 - plan.y1))
@@ -441,17 +616,20 @@ class BlurService:
             ksize += 1
         return ksize
 
-    def _pixelate_block(self, width: int, height: int, intensity: int) -> int:
+    def _pixelate_block(self, width: int, height: int, intensity: int,
+                        max_blocks: Optional[int] = None) -> int:
         """
         Mosaic block size that bounds the grid against the target's smaller side
         and keeps a minimum block, so recognizable detail cannot survive.
         """
         scale = max(0.1, min(1.0, intensity / 100.0))
         min_side = max(1, min(width, height))
-        max_blocks = max(2, int(round(self.pixelate_max_blocks * (1.0 - 0.5 * scale))))
-        return max(self.pixelate_min_block, int(math.ceil(min_side / max_blocks)))
+        cap = self.pixelate_max_blocks if max_blocks is None else max_blocks
+        blocks = max(2, int(round(cap * (1.0 - 0.5 * scale))))
+        return max(self.pixelate_min_block, int(math.ceil(min_side / blocks)))
 
-    def _filter_roi(self, roi: np.ndarray, mode: BlurModeEnum, intensity: int) -> np.ndarray:
+    def _filter_roi(self, roi: np.ndarray, mode: BlurModeEnum, intensity: int,
+                    max_blocks: Optional[int] = None) -> np.ndarray:
         """Returns the filtered version of a whole ROI rectangle."""
         h, w = roi.shape[:2]
 
@@ -461,7 +639,7 @@ class BlurService:
         if mode == BlurModeEnum.PIXELATE:
             # Downscale then upscale with INTER_NEAREST; the block size is bounded
             # against the target's smaller side and has a minimum.
-            block_size = self._pixelate_block(w, h, intensity)
+            block_size = self._pixelate_block(w, h, intensity, max_blocks=max_blocks)
             small_w = max(1, w // block_size)
             small_h = max(1, h // block_size)
             small_roi = cv2.resize(roi, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
@@ -482,9 +660,9 @@ class BlurService:
         """
         Applies the chosen filter to an ROI slice, composited through the mask.
 
-        The face box itself always receives alpha 1.0, so it is fully filtered
-        by every mode; the rounded, feathered silhouette only shapes the padding
-        ring around it.
+        The target box itself always receives alpha 1.0, so it is fully filtered
+        by every mode; for faces the rounded, feathered silhouette only shapes
+        the padding ring around it. Plates use a solid rectangular mask.
         """
         roi = frame[plan.y1:plan.y2, plan.x1:plan.x2]
         if roi.size == 0:
@@ -494,9 +672,23 @@ class BlurService:
         slice_y = slice(plan.y1, plan.y2)
         slice_x = slice(plan.x1, plan.x2)
 
-        filtered = self._filter_roi(roi, mode, intensity)
+        if plan.category == TargetCategory.LAPTOP_SCREENS:
+            max_blocks = self.laptop_pixelate_max_blocks
+        elif plan.category == TargetCategory.PHONE_SCREENS:
+            max_blocks = self.phone_pixelate_max_blocks
+        elif plan.category == TargetCategory.LICENSE_PLATES:
+            max_blocks = self.plate_pixelate_max_blocks
+        elif plan.category in (TargetCategory.ID_CARDS, TargetCategory.PASSPORTS):
+            max_blocks = self.document_pixelate_max_blocks
+        else:
+            max_blocks = None
+        filtered = self._filter_roi(roi, mode, intensity, max_blocks=max_blocks)
 
-        if mode == BlurModeEnum.BLACKOUT or mode == BlurModeEnum.PIXELATE:
+        if plan.quad:
+            # Polygon masks are hard in every mode: a feathered screen edge
+            # would leave readable content just inside the display border.
+            alpha = self._alpha_mask(plan, soft=False, power=1.0)
+        elif mode == BlurModeEnum.BLACKOUT or mode == BlurModeEnum.PIXELATE:
             # Hard, anti-aliased rounded silhouette: a blended mosaic rim both
             # looks muddy and lets recognizable original pixels ghost through.
             alpha = self._alpha_mask(plan, soft=False, power=1.0)

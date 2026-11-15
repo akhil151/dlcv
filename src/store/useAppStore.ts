@@ -42,7 +42,8 @@ interface AppState {
   resetUploadDraft: () => void;
 }
 
-// Only face redaction is validated; see SUPPORTED_CATEGORIES.
+// Faces, plates, documents, laptop screens and phone screens are validated;
+// see SUPPORTED_CATEGORIES.
 const DEFAULT_CATEGORIES: RedactionCategory[] = ['faces'];
 
 export const useAppStore = create<AppState>((set) => ({

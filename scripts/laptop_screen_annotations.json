@@ -1,0 +1,78 @@
+{
+  "description": "Laptop-screen validation set (Phase 4). Real, openly licensed photographs from Wikimedia Commons. Screen polygons and keyboard/deck rectangles were annotated manually by the implementer on the 1280px-wide thumbnails; they are approximate (+/- 10-20 px) and are not third-party ground truth. Camera angles, screen brightness and occlusion vary. cat_laptop has no visible display (the lid faces away) and is included as a no-visible-screen case.",
+  "reference_width": 1280,
+  "images": [
+    {
+      "key": "lenovo",
+      "file": "Lenovo G500s laptop-2905.jpg",
+      "license": "CC BY-SA 4.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Lenovo_G500s_laptop-2905.jpg",
+      "screen_visible": true,
+      "screen_quad": [[470, 92], [1112, 170], [1050, 512], [452, 418]],
+      "keyboard_rect": [150, 545, 1140, 900]
+    },
+    {
+      "key": "msi_wiki",
+      "file": "MSI laptop with English Wikipedia screenshot 20100614.jpg",
+      "license": "CC BY-SA 4.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:MSI_laptop_with_English_Wikipedia_screenshot_20100614.jpg",
+      "screen_visible": true,
+      "screen_quad": [[470, 165], [1090, 150], [1070, 560], [445, 590]],
+      "keyboard_rect": [240, 620, 1080, 860]
+    },
+    {
+      "key": "charts_desk",
+      "file": "Laptop with many charts on screen on cluttered desk.jpg",
+      "license": "CC0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Laptop_with_many_charts_on_screen_on_cluttered_desk.jpg",
+      "screen_visible": true,
+      "screen_quad": [[384, 338], [911, 338], [913, 701], [384, 701]],
+      "keyboard_rect": [360, 712, 940, 840]
+    },
+    {
+      "key": "surface7",
+      "file": "Microsoft Surface Laptop 7.jpg",
+      "license": "CC0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Microsoft_Surface_Laptop_7.jpg",
+      "screen_visible": true,
+      "screen_quad": [[150, 363], [968, 317], [956, 833], [263, 951]],
+      "keyboard_rect": [300, 975, 1200, 1450]
+    },
+    {
+      "key": "wikicamp_screen",
+      "file": "Wikicamp Morocco 2026 Day 2 - Close-up of a laptop screen during a session - 076.jpg",
+      "license": "CC BY-SA 4.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Wikicamp_Morocco_2026_Day_2_-_Close-up_of_a_laptop_screen_during_a_session_-_076.jpg",
+      "screen_visible": true,
+      "screen_quad": [[0, 185], [640, 150], [762, 610], [20, 790]],
+      "keyboard_rect": [300, 675, 1000, 850]
+    },
+    {
+      "key": "dual_touch",
+      "file": "Dual touch screen laptop.jpg",
+      "license": "CC0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Dual_touch_screen_laptop.jpg",
+      "screen_visible": true,
+      "screen_quad": [[25, 135], [600, 10], [605, 445], [40, 480]],
+      "keyboard_rect": [520, 610, 1200, 980]
+    },
+    {
+      "key": "oscillogram",
+      "file": "Oscillogram shown on laptop screen (cropped).jpeg",
+      "license": "CC BY-SA 4.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Oscillogram_shown_on_laptop_screen_(cropped).jpeg",
+      "screen_visible": true,
+      "screen_quad": [[0, 40], [1270, 20], [1265, 800], [0, 905]],
+      "keyboard_rect": [40, 1000, 1260, 1440]
+    },
+    {
+      "key": "cat_laptop",
+      "file": "Cat on laptop - Just Browsing.jpg",
+      "license": "CC BY 2.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Cat_on_laptop_-_Just_Browsing.jpg",
+      "screen_visible": false,
+      "screen_quad": null,
+      "keyboard_rect": null
+    }
+  ]
+}

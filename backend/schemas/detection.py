@@ -27,13 +27,21 @@ except ImportError:
 class TargetCategory(str, Enum):
     FACES = "faces"
     LICENSE_PLATES = "license_plates"
+    # ID cards and passports are both located by the same validated,
+    # class-agnostic document detector. Detections are attributed to ID_CARDS
+    # internally; the requested categories decide which detector runs.
     ID_CARDS = "id_cards"
+    PASSPORTS = "passports"
     LAPTOP_SCREENS = "laptop_screens"
     PHONE_SCREENS = "phone_screens"
 
 class DetectorSource(str, Enum):
     YOLO11M = "yolo11m"
     SECONDARY_FACE = "secondary_face"
+    RTDETR_PLATE = "rtdetr_plate"
+    DOCUMENT_CORNER = "document_corner"
+    RTDETR_LAPTOP = "rtdetr_laptop"
+    RTDETR_PHONE = "rtdetr_phone"
 
 class NormalizedBoundingBox(BaseModel):
     """
@@ -53,6 +61,13 @@ class DetectionItem(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0)
     bbox: NormalizedBoundingBox
     source: DetectorSource = DetectorSource.YOLO11M
+    # Four display corners in frame pixels, when the detector produced a
+    # polygon (laptop screens). Empty for box-only categories.
+    quad: List[List[float]] = Field(default_factory=list)
+    # "screen_quad" when the region is a refined display boundary,
+    # "laptop_fallback" when the whole device box had to be masked, "box"
+    # otherwise. Reported so a fallback is never presented as a screen match.
+    region_kind: str = "box"
 
 class DetectionResultContainer(BaseModel):
     """
@@ -64,3 +79,17 @@ class DetectionResultContainer(BaseModel):
     inference_time_ms: float
     categories_detected: List[TargetCategory]
     secondary_detector_used: bool = False
+    # Additive: whether the plate detector ran for this frame (independent of
+    # whether it found a plate).
+    plate_detector_used: bool = False
+    # Additive: whether the identity-document detector ran for this frame
+    # (independent of whether it found a document).
+    document_detector_used: bool = False
+    # Additive: whether the laptop-screen detector ran for this frame.
+    laptop_detector_used: bool = False
+    # Additive: wall time spent in the laptop model itself (ms).
+    laptop_inference_ms: float = 0.0
+    # Additive: whether the phone-screen detector ran for this frame.
+    phone_detector_used: bool = False
+    # Additive: wall time spent in the phone model itself (ms).
+    phone_inference_ms: float = 0.0

@@ -6,9 +6,12 @@ python-multipart>=0.0.9
 websockets>=12.0
 python-dotenv>=1.0.1
 
-# Video decoding + YuNet ONNX inference (cv2.FaceDetectorYN) and frame math.
+# Video decoding + YuNet/RT-DETR/DocAligner ONNX inference and frame math.
 opencv-python>=4.8.0
 numpy>=1.24
+# Runtime for the laptop-screen device detector graph. The face/plate/document
+# models run through OpenCV DNN; this RT-DETR export uses onnxruntime.
+onnxruntime>=1.17
 
 # Test tooling: backend/tests (pytest) and the HTTP smoke test (requests).
 pytest>=8.0

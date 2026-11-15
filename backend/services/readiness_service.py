@@ -16,6 +16,10 @@ class ReadinessService:
     def snapshot(self) -> Dict[str, Any]:
         ffmpeg = ffmpeg_util.validate_ffmpeg()
         detector = model_manager.detector_readiness()
+        plate_detector = model_manager.plate_detector_readiness()
+        document_detector = model_manager.document_detector_readiness()
+        laptop_detector = model_manager.laptop_detector_readiness()
+        phone_detector = model_manager.phone_detector_readiness()
 
         reasons = []
         if not detector["available"]:
@@ -26,6 +30,9 @@ class ReadinessService:
         if not ffmpeg["available"]:
             reasons.append("ffmpeg executable is not available")
 
+        # Face detection remains the baseline requirement (a face-only job must
+        # stay runnable); plate readiness is reported separately so a missing
+        # optional plate model does not mark the whole engine unavailable.
         processing_ready = bool(detector["available"] and ffmpeg["available"])
         return {
             "status": "ready" if processing_ready else "unavailable",
@@ -37,6 +44,35 @@ class ReadinessService:
                 "status": detector.get("status"),
                 "device": "cpu",
             },
+            "plate_detector": {
+                "name": "RTDETR_R18_PLATE",
+                "available": bool(plate_detector["available"]),
+                "status": plate_detector.get("status"),
+                "device": "cpu",
+            },
+            "license_plates_ready": bool(plate_detector["available"]),
+            "document_detector": {
+                "name": "DOCALIGNER_FASTVIT_SA24",
+                "available": bool(document_detector["available"]),
+                "status": document_detector.get("status"),
+                "device": "cpu",
+            },
+            # Both document categories share this one validated detector.
+            "documents_ready": bool(document_detector["available"]),
+            "laptop_detector": {
+                "name": "RTDETR_R18VD_COCO",
+                "available": bool(laptop_detector["available"]),
+                "status": laptop_detector.get("status"),
+                "device": "cpu",
+            },
+            "laptop_screens_ready": bool(laptop_detector["available"]),
+            "phone_detector": {
+                "name": "RTDETR_R18VD_COCO_PHONE",
+                "available": bool(phone_detector["available"]),
+                "status": phone_detector.get("status"),
+                "device": "cpu",
+            },
+            "phone_screens_ready": bool(phone_detector["available"]),
             "ffmpeg": {
                 "available": bool(ffmpeg["available"]),
                 "version": ffmpeg.get("version"),

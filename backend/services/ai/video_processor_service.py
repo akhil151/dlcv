@@ -13,6 +13,7 @@ import numpy as np
 
 from backend.config.ai_settings import ai_settings
 from backend.core.logging import logger
+from backend.schemas.detection import TargetCategory
 from backend.services.ai.blur_service import blur_service
 from backend.services.ai.detection_service import detection_service
 from backend.services.ai.ghost_box_service import GhostBoxService
@@ -168,6 +169,12 @@ class VideoProcessorService:
         redaction_counts: Dict[str, int] = {}
         frames_with_detections = 0
         masks_total = 0
+        laptop_quad_regions = 0
+        laptop_fallback_regions = 0
+        laptop_inference_ms_total = 0.0
+        phone_quad_regions = 0
+        phone_fallback_regions = 0
+        phone_inference_ms_total = 0.0
         detection_ms_total = 0.0
         blur_ms_total = 0.0
         last_broadcast = 0.0
@@ -243,6 +250,10 @@ class VideoProcessorService:
                 detection_result = self.detection_service.detect_entities(
                     frame, target_categories, frame_index=index)
                 detection_ms_total += (time.time() - det_start) * 1000
+                laptop_inference_ms_total += float(
+                    getattr(detection_result, "laptop_inference_ms", 0.0) or 0.0)
+                phone_inference_ms_total += float(
+                    getattr(detection_result, "phone_inference_ms", 0.0) or 0.0)
 
                 tracks_result = tracker.update_tracks(
                     detection_result.detections, frame_index=index)
@@ -261,6 +272,16 @@ class VideoProcessorService:
                 for plan in blur_result.roi_plans:
                     key = plan.category.value
                     redaction_counts[key] = redaction_counts.get(key, 0) + 1
+                    if plan.category == TargetCategory.LAPTOP_SCREENS:
+                        if plan.region_kind == "screen_quad":
+                            laptop_quad_regions += 1
+                        else:
+                            laptop_fallback_regions += 1
+                    elif plan.category == TargetCategory.PHONE_SCREENS:
+                        if plan.region_kind == "screen_quad":
+                            phone_quad_regions += 1
+                        else:
+                            phone_fallback_regions += 1
                 masks_total += blur_result.total_blurred_regions
                 if detection_result.total_detections > 0:
                     frames_with_detections += 1
@@ -386,6 +407,14 @@ class VideoProcessorService:
                 output_width=verification["width"],
                 output_height=verification["height"],
                 output_size_bytes=verification["size_bytes"],
+                laptop_screen_quad_regions=laptop_quad_regions,
+                laptop_screen_fallback_regions=laptop_fallback_regions,
+                laptop_inference_ms=(round(laptop_inference_ms_total / processed, 2)
+                                     if processed else 0.0),
+                phone_screen_quad_regions=phone_quad_regions,
+                phone_screen_fallback_regions=phone_fallback_regions,
+                phone_inference_ms=(round(phone_inference_ms_total / processed, 2)
+                                    if processed else 0.0),
                 input_audio_streams=input_audio,
                 output_audio_streams=output_audio,
                 audio_preserved=(bool(output_audio) if input_audio else False),
@@ -428,14 +457,14 @@ class VideoProcessorService:
             self._discard(output_path)
             raise
         finally:
-            if collector is not None:
-                try:
-                    collector.join(timeout=2)
-                except RuntimeError:  # pragma: no cover
-                    pass
-                collector.close()
             if cap is not None:
                 cap.release()
+            # Shut the encoder down BEFORE touching its stderr stream. Closing a
+            # pipe while the collector thread is blocked in readline() blocks
+            # indefinitely on Windows and freezes the whole event loop (this is
+            # the cancellation path). Waiting for the process to exit closes the
+            # write end, the collector sees EOF and finishes, and only then is it
+            # safe to close the stream.
             if encoder is not None:
                 try:
                     if encoder.stdin and not encoder.stdin.closed:
@@ -447,7 +476,22 @@ class VideoProcessorService:
                         encoder.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         encoder.kill()
-                        encoder.wait(timeout=5)
+                        try:
+                            encoder.wait(timeout=5)
+                        except subprocess.TimeoutExpired:  # pragma: no cover
+                            pass
+            if collector is not None:
+                try:
+                    collector.join(timeout=3)
+                except RuntimeError:  # pragma: no cover
+                    pass
+                if not collector.is_alive():
+                    collector.close()
+            # A cancelled/failed job may have hit WinError 32 while the encoder
+            # still held the file. Retry now that the encoder is gone so a
+            # partial artefact never lingers in the download directory.
+            if not task.get("output_verified"):
+                self._discard(output_path)
             gc.collect()
 
     # --------------------------------------------------------------- helpers
@@ -499,8 +543,15 @@ class VideoProcessorService:
                 x2 = int((box.x + box.width) / 100.0 * annotated.shape[1])
                 y2 = int((box.y + box.height) / 100.0 * annotated.shape[0])
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 1)
-                cv2.putText(annotated, f"FACE {detection.confidence:.2f}", (x1, max(10, y1 - 4)),
+                cv2.putText(annotated, f"{detection.label} {detection.confidence:.2f}",
+                            (x1, max(10, y1 - 4)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+                # Refined display polygon (magenta) is drawn separately from the
+                # red mask silhouette so a fallback is visible in debug frames.
+                quad = getattr(detection, "quad", None)
+                if quad:
+                    cv2.polylines(annotated, [np.round(np.asarray(quad)).astype(np.int32)],
+                                  True, (255, 0, 255), 1, cv2.LINE_AA)
             for track in tracks:
                 if track.track_state.value not in ("NEW", "TRACKED"):
                     continue

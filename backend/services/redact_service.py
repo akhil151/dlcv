@@ -154,12 +154,67 @@ class RedactService:
         if audio_preserved is not None:
             audio_preserved = bool(audio_preserved)
 
+        # The document detector is class-agnostic: ID cards and passports are
+        # located by the same validated graph, and the pipeline records them in
+        # the canonical "id_cards" bucket. They are reported together as
+        # document regions instead of inventing per-type counts.
+        documents_redacted = int(counts.get("id_cards", 0) + counts.get("passports", 0))
+
+        # Laptop-screen quality: how many masked screen regions came from a
+        # refined display quad versus the whole-device fallback. The fallback is
+        # privacy-safe but over-covers, and is reported instead of being
+        # presented as an accurate screen boundary.
+        laptop_screens_redacted = int(counts.get("laptop_screens", 0))
+        laptop_quad_regions = int(metrics.get("laptop_screen_quad_regions", 0) or 0)
+        laptop_fallback_regions = int(metrics.get("laptop_screen_fallback_regions", 0) or 0)
+        laptop_total_regions = laptop_quad_regions + laptop_fallback_regions
+        laptop_quad_pct = (round(laptop_quad_regions / laptop_total_regions * 100.0, 1)
+                           if laptop_total_regions else 0.0)
+        if laptop_screens_redacted == 0:
+            laptop_boundary = "not_applicable"
+        elif laptop_fallback_regions == 0:
+            laptop_boundary = "refined_quad"
+        elif laptop_quad_regions == 0:
+            laptop_boundary = "device_box_fallback"
+        else:
+            laptop_boundary = "mixed"
+
+        # Phone-screen quality: how many masked screen regions came from a
+        # refined display quad versus the whole-device fallback.
+        phone_screens_redacted = int(counts.get("phone_screens", 0))
+        phone_quad_regions = int(metrics.get("phone_screen_quad_regions", 0) or 0)
+        phone_fallback_regions = int(metrics.get("phone_screen_fallback_regions", 0) or 0)
+        phone_total_regions = phone_quad_regions + phone_fallback_regions
+        phone_quad_pct = (round(phone_quad_regions / phone_total_regions * 100.0, 1)
+                          if phone_total_regions else 0.0)
+        if phone_screens_redacted == 0:
+            phone_boundary = "not_applicable"
+        elif phone_fallback_regions == 0:
+            phone_boundary = "refined_quad"
+        elif phone_quad_regions == 0:
+            phone_boundary = "device_box_fallback"
+        else:
+            phone_boundary = "mixed"
+
         return TaskSummaryResponse(
             task_id=task_id,
             faces_blurred=int(counts.get("faces", 0)),
             license_plates_redacted=int(counts.get("license_plates", 0)),
             screens_hidden=int(counts.get("laptop_screens", 0) + counts.get("phone_screens", 0)),
-            id_cards_found=int(counts.get("id_cards", 0)),
+            documents_redacted=documents_redacted,
+            laptop_screens_redacted=laptop_screens_redacted,
+            laptop_screen_quad_regions=laptop_quad_regions,
+            laptop_screen_fallback_regions=laptop_fallback_regions,
+            laptop_screen_quad_pct=laptop_quad_pct,
+            laptop_screen_boundary=laptop_boundary,
+            phone_screens_redacted=phone_screens_redacted,
+            phone_screen_quad_regions=phone_quad_regions,
+            phone_screen_fallback_regions=phone_fallback_regions,
+            phone_screen_quad_pct=phone_quad_pct,
+            phone_screen_boundary=phone_boundary,
+            # Kept for API backward compatibility. A per-type count is not
+            # claimed because the detector does not classify the document type.
+            id_cards_found=0,
             phones_found=int(counts.get("phone_screens", 0)),
             total_objects_count=int(sum(counts.values())),
             processing_time_seconds=int(metrics.get("elapsed_seconds", 0) or 0),

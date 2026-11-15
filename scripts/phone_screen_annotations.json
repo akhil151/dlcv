@@ -1,0 +1,56 @@
+{
+  "description": "Phone-screen validation set (Phase 5). Real, openly licensed photographs from Wikimedia Commons (originally Pixabay / Unsplash CC0 uploads). Screen quadrilaterals were annotated manually by the implementer on the 1280px-wide thumbnails; they are approximate (+/- 10-20 px) and are not third-party ground truth. Camera angles, screen brightness, hand occlusion and phone size vary, including two small, oblique phones in a candid street scene.",
+  "reference_width": 1280,
+  "images": [
+    {
+      "key": "phone_display",
+      "file": "phone_display.jpg",
+      "license": "CC0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Smartphone_display_screen.jpg",
+      "screen_visible": true,
+      "screen_quad": [[0, 252], [402, 58], [628, 811], [0, 811]],
+      "keyboard_rect": null,
+      "note": "Close-up; display is cut off by the frame, so the mask cannot be fully measured."
+    },
+    {
+      "key": "phone_hand",
+      "file": "phone_hand.jpg",
+      "license": "CC0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Smartphone_in_Hand_(Unsplash).jpg",
+      "screen_visible": true,
+      "screen_quad": [[542, 232], [744, 226], [746, 614], [544, 620]],
+      "keyboard_rect": [520, 630, 770, 740],
+      "note": "Hand-held iPhone, display facing the camera; the bezel/chin below the display is the keep-clear region."
+    },
+    {
+      "key": "phone_people",
+      "file": "phone_people.jpg",
+      "license": "CC0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Screen_time.jpg",
+      "screen_visible": true,
+      "screen_quad": [[352, 458], [445, 440], [488, 520], [382, 540]],
+      "keyboard_rect": [360, 545, 500, 620],
+      "note": "Small, oblique phones in a candid scene; hard case, display mostly dark."
+    },
+    {
+      "key": "phone_bokeh",
+      "file": "phone_bokeh.jpg",
+      "license": "CC0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Cellphone_(Unsplash).jpg",
+      "screen_visible": true,
+      "screen_quad": [[340, 190], [798, 158], [898, 606], [448, 652]],
+      "keyboard_rect": [440, 660, 920, 750],
+      "note": "Tilted phone with a bright, reflective display; bezel/chin below the display is the keep-clear region."
+    },
+    {
+      "key": "phone_use",
+      "file": "phone_use.jpg",
+      "license": "CC0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Smartphone_Use.jpg",
+      "screen_visible": true,
+      "screen_quad": [[428, 235], [682, 192], [935, 570], [700, 665]],
+      "keyboard_rect": [690, 670, 960, 760],
+      "note": "Hand-held Android phone with a bright app-grid display; thumb overlaps the screen edge."
+    }
+  ]
+}

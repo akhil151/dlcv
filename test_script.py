@@ -72,21 +72,91 @@ def main() -> int:
     check(bool(readiness.get("processing_ready")), f"processing_ready is true ({readiness.get('reasons')})")
     check(bool(readiness.get("detector", {}).get("available")), "YuNet detector is available")
     check(bool(readiness.get("ffmpeg", {}).get("available")), "ffmpeg is available")
+    plate_ready = bool(readiness.get("plate_detector", {}).get("available"))
+    documents_ready = bool(readiness.get("documents_ready"))
+    laptop_ready = bool(readiness.get("laptop_screens_ready"))
+    phone_ready = bool(readiness.get("phone_screens_ready"))
+    print(f"        license-plate detector available: {plate_ready}")
+    print(f"        identity-document detector available: {documents_ready}")
+    print(f"        laptop-screen detector available: {laptop_ready}")
+    print(f"        phone-screen detector available: {phone_ready}")
 
-    # 3. Negative: unsupported category must be refused, not ignored.
-    print("3. Unsupported category is rejected")
+    # 3a. Negative: an unvalidated category must be refused, not ignored.
+    # Laptop and phone screens are validated; smartwatches are not.
+    print("3a. Unsupported category is rejected")
     res = requests.post(f"{BASE_URL}/videos/upload",
                         files={"file": ("probe.mp4", open(fixture, "rb"), "video/mp4")}, timeout=120)
     check(res.status_code == 200, f"probe upload returned 200 (got {res.status_code})")
     probe_video_id = res.json().get("video_id", "")
     res = requests.post(f"{BASE_URL}/redact/start", json={
         "video_id": probe_video_id,
-        "target_categories": ["faces", "license_plates"],
+        "target_categories": ["faces", "smartwatches"],
         "blur_style": "gaussian",
         "blur_intensity": 80,
     }, timeout=60)
-    check(res.status_code >= 400, f"license_plates request was refused (got {res.status_code})")
+    check(res.status_code >= 400, f"smartwatches request was refused (got {res.status_code})")
     print(f"        server said: {res.json().get('message')}")
+
+    # 3b. License plates are accepted, or refused with a clear missing-model
+    # error. They must never be silently dropped from the job.
+    print("3b. License-plate category is accepted or explicitly unavailable")
+    res = requests.post(f"{BASE_URL}/redact/start", json={
+        "video_id": probe_video_id,
+        "target_categories": ["license_plates"],
+        "blur_style": "gaussian",
+        "blur_intensity": 80,
+    }, timeout=60)
+    if plate_ready:
+        check(res.status_code == 200, f"license_plates start returned 200 (got {res.status_code})")
+        if res.status_code == 200:
+            plate_task_id = res.json().get("task_id", "")
+            requests.post(f"{BASE_URL}/redact/cancel/{plate_task_id}", timeout=30)
+    else:
+        check(res.status_code == 503,
+              f"license_plates refused with 503 when weights are missing (got {res.status_code})")
+        print(f"        server said: {res.json().get('message')}")
+
+    # 3b2. Laptop screens are accepted, or refused with a clear missing-model
+    # error. They must never be silently dropped from the job.
+    print("3b2. Laptop-screen category is accepted or explicitly unavailable")
+    res = requests.post(f"{BASE_URL}/redact/start", json={
+        "video_id": probe_video_id,
+        "target_categories": ["laptop_screens"],
+        "blur_style": "gaussian",
+        "blur_intensity": 80,
+    }, timeout=60)
+    if laptop_ready:
+        check(res.status_code == 200, f"laptop_screens start returned 200 (got {res.status_code})")
+        if res.status_code == 200:
+            laptop_task_id = res.json().get("task_id", "")
+            requests.post(f"{BASE_URL}/redact/cancel/{laptop_task_id}", timeout=30)
+    else:
+        check(res.status_code == 503,
+              f"laptop_screens refused with 503 when weights are missing (got {res.status_code})")
+        print(f"        server said: {res.json().get('message')}")
+
+    # 3c. ID cards / passports are accepted, or refused with a clear
+    # missing-model error. The document detector is class-agnostic, so both
+    # categories run the same validated graph.
+    print("3c. Identity-document categories are accepted or explicitly unavailable")
+    for category in ("id_cards", "passports"):
+        res = requests.post(f"{BASE_URL}/redact/start", json={
+            "video_id": probe_video_id,
+            "target_categories": [category],
+            "blur_style": "gaussian",
+            "blur_intensity": 80,
+        }, timeout=60)
+        if documents_ready:
+            check(res.status_code == 200,
+                  f"{category} start returned 200 (got {res.status_code})")
+            if res.status_code == 200:
+                doc_task_id = res.json().get("task_id", "")
+                requests.post(f"{BASE_URL}/redact/cancel/{doc_task_id}", timeout=30)
+        else:
+            check(res.status_code == 503,
+                  f"{category} refused with 503 when weights are missing "
+                  f"(got {res.status_code})")
+            print(f"        server said: {res.json().get('message')}")
 
     # 4. Negative: a non-video upload is rejected.
     print("4. Corrupt upload is rejected")
@@ -167,6 +237,7 @@ def main() -> int:
     summary = res.json() if res.status_code == 200 else {}
     if summary:
         print(f"        faces_blurred={summary.get('faces_blurred')} "
+              f"documents_redacted={summary.get('documents_redacted')} "
               f"frames={summary.get('frames_processed')} "
               f"detection_frames={summary.get('detection_frame_pct')}% "
               f"resolution={summary.get('output_resolution')} "

@@ -6,6 +6,7 @@ class RedactionCategoryEnum(str, Enum):
     FACES = "faces"
     LICENSE_PLATES = "license_plates"
     ID_CARDS = "id_cards"
+    PASSPORTS = "passports"
     LAPTOP_SCREENS = "laptop_screens"
     PHONE_SCREENS = "phone_screens"
 
@@ -93,6 +94,25 @@ class TaskSummaryResponse(BaseModel):
     faces_blurred: int
     license_plates_redacted: int
     screens_hidden: int
+    # Document regions masked across all frames. The document detector is
+    # class-agnostic, so ID cards and passports are counted together here; the
+    # legacy per-type fields stay 0 rather than reporting unverified type counts.
+    documents_redacted: int = 0
+    # Laptop-screen region-frames masked by the Phase 4 screen detector. The
+    # quad/fallback counts make the display-boundary quality explicit: a
+    # fallback means the whole device box was masked because the screen
+    # boundary could not be reliably separated.
+    laptop_screens_redacted: int = 0
+    laptop_screen_quad_regions: int = 0
+    laptop_screen_fallback_regions: int = 0
+    laptop_screen_quad_pct: float = 0.0
+    laptop_screen_boundary: str = "not_applicable"
+    # Phone-screen region-frames masked by the Phase 5 phone screen detector.
+    phone_screens_redacted: int = 0
+    phone_screen_quad_regions: int = 0
+    phone_screen_fallback_regions: int = 0
+    phone_screen_quad_pct: float = 0.0
+    phone_screen_boundary: str = "not_applicable"
     id_cards_found: int
     phones_found: int
     total_objects_count: int

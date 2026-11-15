@@ -44,6 +44,10 @@ class TrackedObjectItem(BaseModel):
     age: int = Field(..., ge=1, description="Total consecutive frames track has existed")
     frames_since_update: int = Field(..., ge=0, description="Frames since last detection match")
     is_confirmed: bool = Field(default=True, description="True if track has surpassed min hit threshold")
+    # Polygon region carried through the trajectory (laptop screens). Kept at
+    # the last observed geometry while a track is temporarily lost.
+    quad: List[List[float]] = Field(default_factory=list)
+    region_kind: str = "box"
 
 class TrackingFrameResult(BaseModel):
     """

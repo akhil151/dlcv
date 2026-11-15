@@ -15,11 +15,17 @@ class SingleTrackInternal:
     """
     Internal state representation of an active trajectory.
     """
-    def __init__(self, track_id: int, category: TargetCategory, bbox: NormalizedBoundingBox, confidence: float):
+    def __init__(self, track_id: int, category: TargetCategory, bbox: NormalizedBoundingBox, confidence: float,
+                 quad: Optional[List[List[float]]] = None, region_kind: str = "box"):
         self.track_id = track_id
         self.category = category
         self.bbox = bbox
         self.confidence = confidence
+        # Polygon region for category-specific masks (laptop screens). It is
+        # carried through the trajectory and updated only on a real match, so a
+        # lost track keeps the last observed screen geometry.
+        self.quad: List[List[float]] = quad or []
+        self.region_kind = region_kind
         self.track_state = TrackStateEnum.NEW
         self.age = 1
         self.hits = 1
@@ -94,7 +100,8 @@ class SingleTrackInternal:
             width=round(max(0.1, x2 - x1), 2), height=round(max(0.1, y2 - y1), 2),
         )
 
-    def mark_matched(self, bbox: NormalizedBoundingBox, confidence: float):
+    def mark_matched(self, bbox: NormalizedBoundingBox, confidence: float,
+                     quad: Optional[List[List[float]]] = None, region_kind: str = "box"):
         previous_center = self.center
         new_center = (bbox.x + bbox.width / 2.0, bbox.y + bbox.height / 2.0)
         measured = (new_center[0] - previous_center[0], new_center[1] - previous_center[1])
@@ -107,6 +114,9 @@ class SingleTrackInternal:
         )
         self.bbox = self._smooth_bbox(bbox)
         self.confidence = confidence
+        if quad:
+            self.quad = quad
+        self.region_kind = region_kind
         self.age += 1
         self.hits += 1
         self.frames_since_update = 0
@@ -124,7 +134,8 @@ class SingleTrackInternal:
         category_label_map = {
             TargetCategory.FACES: "FACE",
             TargetCategory.LICENSE_PLATES: "PLATE",
-            TargetCategory.ID_CARDS: "ID",
+            TargetCategory.ID_CARDS: "DOC",
+            TargetCategory.PASSPORTS: "DOC",
             TargetCategory.LAPTOP_SCREENS: "SCREEN",
             TargetCategory.PHONE_SCREENS: "PHONE",
         }
@@ -139,6 +150,8 @@ class SingleTrackInternal:
             age=self.age,
             frames_since_update=self.frames_since_update,
             is_confirmed=self.is_confirmed,
+            quad=self.quad,
+            region_kind=self.region_kind,
         )
 
 class TrackingService:
@@ -166,6 +179,19 @@ class TrackingService:
         self.max_buffer_frames: int = ai_settings.TRACK_BUFFER_FRAMES
         self.match_iou_threshold: float = ai_settings.MATCH_IOU_THRESHOLD
         self.conf_threshold: float = ai_settings.TRACK_CONF_THRESHOLD
+        # RT-DETR emits compressed single-class scores (a confident plate is
+        # ~0.10-0.20), so the face threshold would silently discard every plate
+        # detection. The plate tracker uses the detector's own threshold.
+        self.plate_conf_threshold: float = ai_settings.PLATE_CONF_THRESHOLD
+        # Document detections carry corner-heatmap peaks (a confident document
+        # is ~0.9), so they use their own floor rather than the face floor.
+        self.document_conf_threshold: float = ai_settings.DOCUMENT_CONF_THRESHOLD
+        # Screen detections are COCO scores (a confident laptop is ~0.5-0.98),
+        # so they use the detector's own floor. This does not touch the face,
+        # plate or document thresholds.
+        self.laptop_conf_threshold: float = ai_settings.LAPTOP_CONF_THRESHOLD
+        # Phone detections use their own floor (COCO scores ~0.3-0.98).
+        self.phone_conf_threshold: float = ai_settings.PHONE_CONF_THRESHOLD
         self.total_new_tracks: int = 0
 
     def reset(self) -> None:
@@ -190,8 +216,21 @@ class TrackingService:
         removed_tracks_count = 0
         id_switches_count = 0
 
-        # Filter detections by confidence threshold
-        valid_detections = [d for d in detections if d.confidence >= self.conf_threshold]
+        # Filter detections by the threshold of their own detector.
+        def _floor(category: TargetCategory) -> float:
+            if category == TargetCategory.LICENSE_PLATES:
+                return self.plate_conf_threshold
+            if category in (TargetCategory.ID_CARDS, TargetCategory.PASSPORTS):
+                return self.document_conf_threshold
+            if category == TargetCategory.LAPTOP_SCREENS:
+                return self.laptop_conf_threshold
+            if category == TargetCategory.PHONE_SCREENS:
+                return self.phone_conf_threshold
+            return self.conf_threshold
+
+        valid_detections = [
+            d for d in detections if d.confidence >= _floor(d.category)
+        ]
 
         # Step 1: Spatial IoU & BoT-SORT Trajectory Association
         matched_pair_indices, unmatched_track_ids, unmatched_det_indices = self._associate_detections_to_tracks(
@@ -202,7 +241,7 @@ class TrackingService:
         for track_id, det_idx in matched_pair_indices:
             det = valid_detections[det_idx]
             track = self.active_tracks[track_id]
-            track.mark_matched(det.bbox, det.confidence)
+            track.mark_matched(det.bbox, det.confidence, det.quad, det.region_kind)
 
         # Step 3: Handle Unmatched (Missed) Active Tracks -> Transition to LOST
         purged_track_ids: List[int] = []
@@ -224,6 +263,8 @@ class TrackingService:
                 category=det.category,
                 bbox=det.bbox,
                 confidence=det.confidence,
+                quad=det.quad,
+                region_kind=det.region_kind,
             )
             self.active_tracks[self.next_track_id] = new_track
             self.next_track_id += 1
